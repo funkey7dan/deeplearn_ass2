@@ -35,6 +35,7 @@ def most_similar(word, vocab, vecs, k=5):
 if __name__ == "__main__":
     to_check = ["dog", "england", "john", "explode", "office"]
     # vocab = np.loadtxt("vocab.txt", dtype=str)
+    # vocab.tolist()
     with open("vocab.txt", "r", encoding="utf-8") as file:
         vocab = file.readlines()
         vocab = [word.strip() for word in vocab]

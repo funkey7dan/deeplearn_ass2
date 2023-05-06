@@ -35,10 +35,10 @@ class Tagger(nn.Module):
         window_size = 5
         input_size = (
             embedding_matrix.embedding_dim * window_size
-        )  # 4 concat. 50 dimensional embedding vectors, output over labels
+        )  # 5 concat. 50 dimensional embedding vectors, output over labels
         self.in_linear = nn.Linear(input_size, hidden_size)
         self.out_linear = nn.Linear(hidden_size, output_size)
-        self.softmax = nn.Softmax()
+        #self.softmax = nn.Softmax()
         self.embedding_matrix = embedding_matrix
         self.activate = nn.Tanh()
 
@@ -56,8 +56,6 @@ class Tagger(nn.Module):
 def train_model(model, input_data, windows, epochs=1, lr=0.5):
     # optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
     # sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
     model.train()
 
@@ -73,6 +71,7 @@ def train_model(model, input_data, windows, epochs=1, lr=0.5):
             optimizer.zero_grad(set_to_none=True)
             y_hat = model.forward(x, windows)
             # loss = loss_fn(y_hat, y)
+            # loss.backward()
             loss = F.cross_entropy(y_hat, y)
             optimizer.step()
             train_loss += loss.item()
@@ -218,11 +217,11 @@ def main():
 
 
 if __name__ == "__main__":
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        torch.cuda.device(0)
-        torch.cuda.set_device(0)
-    else:
-        device = torch.device("cpu")
+    # if torch.cuda.is_available():
+    #     device = torch.device("cuda")
+    #     torch.cuda.device(0)
+    #     torch.cuda.set_device(0)
+    # else:
+    #     device = torch.device("cpu")
     # cProfile.run("main()")
     main()
