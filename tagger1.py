@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os
+from torch.utils.data import DataLoader, TensorDataset
 
 
 class Tagger(nn.Module):
@@ -45,7 +46,7 @@ class Tagger(nn.Module):
         x = self.in_linear(x)
         x = self.activate(x)
         x = self.out_linear(x)
-        x = self.softmax(x)
+        # x = self.softmax(x) #TODO: we are using cross-entropy loss therefore we maybe don't need softmax
         return x
 
 
@@ -111,26 +112,100 @@ def read_data(fname, window_size=2):
     return tokens_idx, labels_idx, windows, vocab, labels_vocab
 
 
-def idx_to_window_torch(idx, windows, embedding_matrix):
-    t_new = torch.tensor([])
-    tensors = []
-    for t in windows[idx][0]:
-        if t != -1:
-            t = embedding_matrix(torch.tensor(t))
-        else:
-            t = torch.zeros(embedding_matrix.embedding_dim)
-        tensors.append(t)
-    return torch.cat(tensors)
+# def idx_to_window_torch(idx, windows, embedding_matrix):
+#     t_new = torch.tensor([])
+#     tensors = []
+#     for t in windows[idx][0]:
+#         if t != -1:
+#             t = embedding_matrix(torch.tensor(t))
+#         else:
+#             t = torch.zeros(embedding_matrix.embedding_dim)
+#         tensors.append(t)
+#     return torch.cat(tensors)
 
+# def idx_to_window_torch(idx, windows, embedding_matrix):
+#     """
+#     Convert a tensor of word indices into a tensor of word embeddings
+#     for a given window size and embedding matrix.
+
+#     Args:
+#         idx (torch.Tensor): A tensor of word indices of shape (batch_size, window_size).
+#         windows (int): The window size.
+#         embedding_matrix (torch.Tensor): A tensor of word embeddings.
+
+#     Returns:
+#         torch.Tensor: A tensor of word embeddings of shape (batch_size, window_size * embedding_size).
+#     """
+#     embedding_size = embedding_matrix.embedding_dim
+#     batch_size = idx.shape[0]
+
+#     windows = torch.tensor(list(map(lambda x: windows[x][0], idx.tolist())))
+
+#     # Use torch.reshape to flatten the tensor of windows into a 2D tensor
+#     windows_flat = torch.reshape(windows, (batch_size, -1))
+
+#     # Index into the embedding matrix to get the embeddings for each word in each window
+#     embeddings = embedding_matrix(windows_flat)
+
+#     # Use torch.reshape again to reshape the tensor of embeddings into the correct shape
+#     embeddings = torch.reshape(embeddings, (batch_size, -1))
+
+#     return embeddings
+
+def idx_to_window_torch(idx, windows, embedding_matrix):
+    """
+    Convert a tensor of word indices into a tensor of word embeddings
+    for a given window size and embedding matrix.
+
+    Args:
+        idx (torch.Tensor): A tensor of word indices of shape (batch_size, window_size).
+        windows (int): The window size.
+        embedding_matrix (torch.Tensor): A tensor of word embeddings.
+
+    Returns:
+        torch.Tensor: A tensor of word embeddings of shape (batch_size, window_size * embedding_size).
+    """
+    embedding_size = embedding_matrix.embedding_dim
+    batch_size = idx.shape[0]
+
+    # Map the idx_to_window() function to each index in the tensor using PyTorch's map() function
+    windows = torch.tensor(list(map(lambda x: windows[x][0], idx.tolist())))
+    window_size = windows.size()[1]
+    # Use torch.reshape to flatten the tensor of windows into a 2D tensor
+    windows_flat = torch.reshape(windows, (batch_size, -1))
+
+    # Index into the embedding matrix to get the embeddings for each word in each window
+    # Add a check to ensure that the input word index is within the bounds of the embedding matrix
+    embeddings = []
+    for i in range(batch_size):
+        window = windows_flat[i]
+        window_embeddings = []
+        for j in range(window_size):
+            word_idx = window[j].item()
+            if word_idx >= embedding_matrix.num_embeddings or word_idx == -1:
+                # If the word index is out of bounds, use the zero vector as the embedding
+                embed = torch.zeros((embedding_size,))
+            else:
+                embed = embedding_matrix(torch.tensor(word_idx))
+            window_embeddings.append(embed)
+        embeddings.append(torch.cat(window_embeddings))
+
+    # Use torch.stack to stack the tensor of embeddings into a 2D tensor
+    embeddings = torch.stack(embeddings)
+
+    return embeddings
 
 def train_model(model, input_data, windows, epochs=1, lr=0.01):
     optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
     model.train()
     loss_fn = nn.CrossEntropyLoss()
+
+    train_loader = DataLoader(input_data, batch_size=32, shuffle=True)
+
     for j in range(epochs):
         train_loss = 0
         optimizer.zero_grad()
-        for i, data in enumerate(input_data, 0):
+        for i, data in enumerate(train_loader, 0):
             x, y = data
             y_hat = model.forward(x, windows)
             loss = loss_fn(y_hat, y)
@@ -138,6 +213,7 @@ def train_model(model, input_data, windows, epochs=1, lr=0.01):
             optimizer.step()
             train_loss += loss.item()
         print(f"Epoch {j}, Loss: {train_loss/i}")
+
 
 def test_model(model, input_data, windows):
     model.eval()
@@ -154,10 +230,14 @@ def main():
     # embedding_matrix = np.zeros((len(vocab), 50)) #create an empty embedding matrix, each vector is size 50
     embedding_matrix = nn.Embedding(len(vocab), 50)
     model = Tagger("ner", vocab, labels_vocab, embedding_matrix)
-    train_model(
-        model, input_data=zip(tokens_idx, labels_idx), epochs=1, windows=windows
-    )
+    dataset = TensorDataset(tokens_idx, labels_idx)
+    train_model(model, input_data=dataset, epochs=1, windows=windows)
     tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
 
+
 if __name__ == "__main__":
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
     main()
