@@ -1,8 +1,11 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 import os
 from torch.utils.data import DataLoader, TensorDataset
+import cProfile
+import pstats
 
 
 class Tagger(nn.Module):
@@ -48,6 +51,42 @@ class Tagger(nn.Module):
         x = self.out_linear(x)
         # x = self.softmax(x) #TODO: we are using cross-entropy loss therefore we maybe don't need softmax
         return x
+
+
+def train_model(model, input_data, windows, epochs=1, lr=0.5):
+    # optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    # sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    model.train()
+
+    # loss_fn = nn.CrossEntropyLoss()
+
+    for j in range(epochs):
+        train_loader = DataLoader(
+            input_data, batch_size=32, shuffle=True, num_workers=4, pin_memory=True
+        )
+        train_loss = 0
+        for i, data in enumerate(train_loader, 0):
+            x, y = data
+            optimizer.zero_grad(set_to_none=True)
+            y_hat = model.forward(x, windows)
+            # loss = loss_fn(y_hat, y)
+            loss = F.cross_entropy(y_hat, y)
+            optimizer.step()
+            train_loss += loss.item()
+        print(f"Epoch {j}, Loss: {train_loss/i}")
+
+
+def test_model(model, input_data, windows):
+    model.eval()
+    total_loss = 0
+    for i, data in enumerate(input_data, 0):
+        x, y = data
+        y_hat = model.forward(x, windows)
+        loss = loss_fn(y_hat, y)
+        total_loss += loss.item()
 
 
 def read_data(fname, window_size=2):
@@ -123,35 +162,6 @@ def read_data(fname, window_size=2):
 #         tensors.append(t)
 #     return torch.cat(tensors)
 
-# def idx_to_window_torch(idx, windows, embedding_matrix):
-#     """
-#     Convert a tensor of word indices into a tensor of word embeddings
-#     for a given window size and embedding matrix.
-
-#     Args:
-#         idx (torch.Tensor): A tensor of word indices of shape (batch_size, window_size).
-#         windows (int): The window size.
-#         embedding_matrix (torch.Tensor): A tensor of word embeddings.
-
-#     Returns:
-#         torch.Tensor: A tensor of word embeddings of shape (batch_size, window_size * embedding_size).
-#     """
-#     embedding_size = embedding_matrix.embedding_dim
-#     batch_size = idx.shape[0]
-
-#     windows = torch.tensor(list(map(lambda x: windows[x][0], idx.tolist())))
-
-#     # Use torch.reshape to flatten the tensor of windows into a 2D tensor
-#     windows_flat = torch.reshape(windows, (batch_size, -1))
-
-#     # Index into the embedding matrix to get the embeddings for each word in each window
-#     embeddings = embedding_matrix(windows_flat)
-
-#     # Use torch.reshape again to reshape the tensor of embeddings into the correct shape
-#     embeddings = torch.reshape(embeddings, (batch_size, -1))
-
-#     return embeddings
-
 
 def idx_to_window_torch(idx, windows, embedding_matrix):
     """
@@ -197,43 +207,14 @@ def idx_to_window_torch(idx, windows, embedding_matrix):
     return embeddings
 
 
-def train_model(model, input_data, windows, epochs=1, lr=0.01):
-    optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
-    model.train()
-    loss_fn = nn.CrossEntropyLoss()
-
-    for j in range(epochs):
-        train_loader = DataLoader(input_data, batch_size=512, shuffle=True,num_workers=4,pin_memory=True)
-        train_loss = 0
-        optimizer.zero_grad()
-        for i, data in enumerate(train_loader, 0):
-            x, y = data
-            y_hat = model.forward(x, windows)
-            loss = loss_fn(y_hat, y)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item()
-        print(f"Epoch {j}, Loss: {train_loss/i}")
-
-
-def test_model(model, input_data, windows):
-    model.eval()
-    total_loss = 0
-    for i, data in enumerate(input_data, 0):
-        x, y = data
-        y_hat = model.forward(x, windows)
-        loss = loss_fn(y_hat, y)
-        total_loss += loss.item()
-
-
 def main():
     tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/train")
     # embedding_matrix = np.zeros((len(vocab), 50)) #create an empty embedding matrix, each vector is size 50
     embedding_matrix = nn.Embedding(len(vocab), 50)
     model = Tagger("ner", vocab, labels_vocab, embedding_matrix)
     dataset = TensorDataset(tokens_idx, labels_idx)
-    train_model(model, input_data=dataset, epochs=1, windows=windows)
-    #tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
+    train_model(model, input_data=dataset, epochs=10, windows=windows)
+    # tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
 
 
 if __name__ == "__main__":
@@ -243,4 +224,5 @@ if __name__ == "__main__":
         torch.cuda.set_device(0)
     else:
         device = torch.device("cpu")
+    # cProfile.run("main()")
     main()
