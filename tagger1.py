@@ -152,6 +152,7 @@ def read_data(fname, window_size=2):
 
 #     return embeddings
 
+
 def idx_to_window_torch(idx, windows, embedding_matrix):
     """
     Convert a tensor of word indices into a tensor of word embeddings
@@ -195,14 +196,14 @@ def idx_to_window_torch(idx, windows, embedding_matrix):
 
     return embeddings
 
+
 def train_model(model, input_data, windows, epochs=1, lr=0.01):
     optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
     model.train()
     loss_fn = nn.CrossEntropyLoss()
 
-    train_loader = DataLoader(input_data, batch_size=32, shuffle=True)
-
     for j in range(epochs):
+        train_loader = DataLoader(input_data, batch_size=512, shuffle=True,num_workers=4,pin_memory=True)
         train_loss = 0
         optimizer.zero_grad()
         for i, data in enumerate(train_loader, 0):
@@ -232,12 +233,14 @@ def main():
     model = Tagger("ner", vocab, labels_vocab, embedding_matrix)
     dataset = TensorDataset(tokens_idx, labels_idx)
     train_model(model, input_data=dataset, epochs=1, windows=windows)
-    tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
+    #tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
 
 
 if __name__ == "__main__":
     if torch.cuda.is_available():
         device = torch.device("cuda")
+        torch.cuda.device(0)
+        torch.cuda.set_device(0)
     else:
         device = torch.device("cpu")
     main()
