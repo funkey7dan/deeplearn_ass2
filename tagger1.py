@@ -38,7 +38,7 @@ class Tagger(nn.Module):
         )  # 5 concat. 50 dimensional embedding vectors, output over labels
         self.in_linear = nn.Linear(input_size, hidden_size)
         self.out_linear = nn.Linear(hidden_size, output_size)
-        #self.softmax = nn.Softmax()
+        # self.softmax = nn.Softmax()
         self.embedding_matrix = embedding_matrix
         self.activate = nn.Tanh()
 
@@ -53,7 +53,7 @@ class Tagger(nn.Module):
         return x
 
 
-def train_model(model, input_data, windows, epochs=1, lr=0.5):
+def train_model(model, input_data, dev_data, windows, epochs=1, lr=0.5):
     # optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     # sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
@@ -75,7 +75,17 @@ def train_model(model, input_data, windows, epochs=1, lr=0.5):
             loss = F.cross_entropy(y_hat, y)
             optimizer.step()
             train_loss += loss.item()
-        print(f"Epoch {j}, Loss: {train_loss/i}")
+        dev_loader = DataLoader(
+            dev_data, batch_size=32, shuffle=True, num_workers=4, pin_memory=True
+        )
+        running_val_loss = 0
+        # Evalaute model on dev at the end of each epoch.
+        with torch.no_grad():
+            for k, data in enumerate(dev_loader, 0):
+                y_hat = model.forward(x, windows)
+                val_loss = F.cross_entropy(y_hat, y)
+                running_val_loss += val_loss.item()
+        print(f"Epoch {j}, Loss: {train_loss/i}, Dev Loss: {running_val_loss/k}")
 
 
 def test_model(model, input_data, windows):
@@ -209,10 +219,19 @@ def idx_to_window_torch(idx, windows, embedding_matrix):
 def main():
     tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/train")
     # embedding_matrix = np.zeros((len(vocab), 50)) #create an empty embedding matrix, each vector is size 50
-    embedding_matrix = nn.Embedding(len(vocab), 50)
+    embedding_matrix = nn.Embedding(len(vocab), 50, _freeze=False)
+    embedding_matrix.weight.requires_grad = True
+    nn.init.xavier_uniform_(embedding_matrix.weight)
     model = Tagger("ner", vocab, labels_vocab, embedding_matrix)
     dataset = TensorDataset(tokens_idx, labels_idx)
-    train_model(model, input_data=dataset, epochs=10, windows=windows)
+    tokens_idx_dev, labels_idx_dev, windows, vocab, labels_vocab = read_data(
+        "./ner/dev"
+    )
+    dev_dataset = TensorDataset(tokens_idx, labels_idx)
+    train_model(
+        model, input_data=dataset, dev_data=dev_dataset, epochs=3, windows=windows
+    )
+
     # tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
 
 
