@@ -169,28 +169,46 @@ def read_data(fname, window_size=2):
     """
     global idx_to_label
     global idx_to_word
-    data = []
+    data = []           
+    
     with open(fname) as f:
         lines = f.readlines()
-        lines = [line.strip() for line in lines if line.strip()]
+        #lines = [line.strip() for line in lines if line.strip()]
         tokens = []
         labels = []
+        sentences = []
         for line in lines:
-            token, label = line.split()
+            if line == "\n":
+                sentences.append((tokens, labels))
+                tokens = []
+                labels = []
+                continue
+            token, label = line.split("\t")
             tokens.append(token)
             labels.append(label)
     # Preprocess data
-    for i in range(len(tokens)):
-        if any(char.isdigit() for char in tokens[i]) and labels[i] == "O":
-            tokens[i] = "$NUM"
-        tokens[i] = tokens[i].lower().strip()
-        labels[i] = labels[i].lower().strip()
-    tokens = replace_rare(tokens)
-    tokens = np.array(tokens[1:])
-    labels = np.array(labels[1:])
-    vocab = set(tokens) # build a vocabulary of unique tokens
+    sentences = sentences[1:] # remove docstart
+    all_tokens = []
+    all_labels = []
+    for sentence in sentences:
+        tokens, labels = sentence
+        for i in range(len(tokens)):
+            if any(char.isdigit() for char in tokens[i]) and labels[i] == "O":
+                tokens[i] = "$NUM"
+            tokens[i] = tokens[i].lower().strip()
+            labels[i] = labels[i].lower().strip()
+        #tokens = replace_rare(tokens)
+        all_tokens.extend(tokens)
+        all_labels.extend(labels)
+        tokens = np.array(tokens)
+        labels = np.array(labels)
+        sentence[0].clear()
+        sentence[0].extend(tokens)
+        sentence[1].clear()
+        sentence[1].extend(labels)
+    vocab = set(all_tokens) # build a vocabulary of unique tokens
     vocab.add("<PAD>")
-    labels_vocab = set(labels)
+    labels_vocab = set(all_labels)
 
     # Map words to their corresponding index in the vocabulary (word:idx)
     word_to_idx = {word: i for i, word in enumerate(vocab)}
@@ -199,32 +217,34 @@ def read_data(fname, window_size=2):
     idx_to_label = {i: label for label, i in labels_to_idx.items()}
     idx_to_word = {i: word for word, i in word_to_idx.items()}
 
-    # For each window, map tokens to their index in the vocabulary
-    tokens_idx = [word_to_idx[word] for word in tokens]
-
-    # tokens_idx = torch.from_numpy(tokens_idx)
-    labels_idx = [labels_to_idx[label] for label in labels]
-    # labels_idx = torch.from_numpy(labels_idx)
-
     # Create windows, each window will be of size window_size, padded with -1
     # for token of index i, w_i the window is: ([w_i-2,w_i-1 i, w_i+1,w_i+2],label of w_i)
     windows = []
     windows_dict = {}
-    for i in range(len(tokens_idx)):
-        start = max(0, i - window_size)
-        end = min(len(tokens_idx), i + window_size + 1)
-        context = (
-            tokens_idx[start:i]
-            + [word_to_idx["<PAD>"]] * (window_size - i + start)
-            + tokens_idx[i:end]
-            + [word_to_idx["<PAD>"]] * (window_size - end + i + 1)
-        )
-        label = labels_idx[i]
-        windows.append((context, label))
-        windows_dict[i] = (context, label)
-
-    tokens_idx = torch.tensor(tokens_idx)
-    labels_idx = torch.tensor(labels_idx)
+    tokens_idx_all = []
+    labels_idx_all = []
+    for sentence in sentences:
+        tokens, labels = sentence
+        # map tokens to their index in the vocabulary
+        tokens_idx = [word_to_idx[word] for word in tokens]
+        tokens_idx_all.extend(tokens_idx)
+        labels_idx = [labels_to_idx[label] for label in labels]
+        labels_idx_all.extend(labels_idx)
+        
+        for i in range(len(tokens_idx)):
+            start = max(0, i - window_size)
+            end = min(len(tokens_idx), i + window_size + 1)
+            context = (
+                tokens_idx[start:i]
+                + [word_to_idx["<PAD>"]] * (window_size - i + start)
+                + tokens_idx[i:end]
+                + [word_to_idx["<PAD>"]] * (window_size - end + i + 1)
+            )
+            label = labels_idx[i]
+            windows.append((context, label))
+            #windows_dict[i] = (context, label)
+    tokens_idx = torch.tensor(tokens_idx_all)
+    labels_idx = torch.tensor(labels_idx_all)
     return tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict
 
 
@@ -301,13 +321,6 @@ def main():
 
 
 if __name__ == "__main__":
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        torch.cuda.device(0)
-        torch.cuda.set_device(0)
-        print("Using GPU")
-    else:
-        device = torch.device("cpu")
-        print("Using CPU")
+
     # cProfile.run("main()")
     main()
