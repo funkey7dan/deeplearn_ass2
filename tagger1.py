@@ -7,6 +7,9 @@ from torch.utils.data import DataLoader, TensorDataset
 import cProfile
 import pstats
 
+idx_to_label = {}
+idx_to_word = {}
+
 
 class Tagger(nn.Module):
     # TODO clean this description
@@ -54,6 +57,8 @@ class Tagger(nn.Module):
 
 
 def train_model(model, input_data, dev_data, windows, epochs=1, lr=0.5):
+    global idx_to_label
+    BATCH_SIZE = 32
     # optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     # sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
@@ -62,9 +67,7 @@ def train_model(model, input_data, dev_data, windows, epochs=1, lr=0.5):
     # loss_fn = nn.CrossEntropyLoss()
 
     for j in range(epochs):
-        train_loader = DataLoader(
-            input_data, batch_size=32, shuffle=True, num_workers=4, pin_memory=True
-        )
+        train_loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True)
         train_loss = 0
         for i, data in enumerate(train_loader, 0):
             x, y = data
@@ -73,19 +76,36 @@ def train_model(model, input_data, dev_data, windows, epochs=1, lr=0.5):
             # loss = loss_fn(y_hat, y)
             # loss.backward()
             loss = F.cross_entropy(y_hat, y)
-            optimizer.step()
+            loss.backward()
             train_loss += loss.item()
-        dev_loader = DataLoader(
-            dev_data, batch_size=32, shuffle=True, num_workers=4, pin_memory=True
-        )
+            optimizer.step()
+
+        dev_loader = DataLoader(dev_data, batch_size=BATCH_SIZE, shuffle=True)
         running_val_loss = 0
         # Evalaute model on dev at the end of each epoch.
         with torch.no_grad():
+            count = 0
+            count_no_o = 0
+            to_remove = 0
             for k, data in enumerate(dev_loader, 0):
+                x, y = data
                 y_hat = model.forward(x, windows)
                 val_loss = F.cross_entropy(y_hat, y)
+                y_hat_labels = [idx_to_label[i.item()] for i in y_hat.argmax(dim=1)]
+                y_labels = [idx_to_label[i.item()] for i in y]
+                y_agreed = sum(
+                    [
+                        1 if (i == j and j != "o") else 0
+                        for i, j in zip(y_hat_labels, y_labels)
+                    ]
+                )
+                count += sum(y_hat.argmax(dim=1) == y).item()
+                count_no_o += y_agreed
+                to_remove += y_labels.count("o")
                 running_val_loss += val_loss.item()
-        print(f"Epoch {j}, Loss: {train_loss/i}, Dev Loss: {running_val_loss/k}")
+        print(
+            f"Epoch {j}, Loss: {train_loss/i}, Dev Loss: {running_val_loss/k}, Dev Acc: {count/(k*BATCH_SIZE)} Acc No O:{count_no_o/((k*BATCH_SIZE)-to_remove)}"
+        )
 
 
 def test_model(model, input_data, windows):
@@ -96,6 +116,29 @@ def test_model(model, input_data, windows):
         y_hat = model.forward(x, windows)
         loss = loss_fn(y_hat, y)
         total_loss += loss.item()
+
+
+def replace_rare(dataset):
+    from collections import Counter
+
+    # Define a threshold for word frequency
+    threshold = 5
+
+    # Load the dataset into a list of strings (one string per document)
+
+    # Tokenize the dataset into a list of words
+    words = [word for doc in dataset for word in doc.split()]
+
+    # Count the frequency of each word
+    word_counts = Counter(words)
+
+    # Find the set of rare words (words that occur less than the threshold)
+    rare_words = set(word for word in word_counts if word_counts[word] < threshold)
+
+    # Print the rare words
+    # print(rare_words)
+    updated = [word if word not in rare_words else "<UNK>" for word in dataset]
+    return updated
 
 
 def read_data(fname, window_size=2):
@@ -113,6 +156,8 @@ def read_data(fname, window_size=2):
             - vocab (set): A set of unique tokens in the data.
             - labels_vocab (set): A set of unique labels in the data.
     """
+    global idx_to_label
+    global idx_to_word
     data = []
     with open(fname) as f:
         lines = f.readlines()
@@ -123,15 +168,25 @@ def read_data(fname, window_size=2):
             token, label = line.split()
             tokens.append(token)
             labels.append(label)
-
+    # Preprocess data
+    for i in range(len(tokens)):
+        if any(char.isdigit() for char in tokens[i]) and labels[i] == "O":
+            tokens[i] = "$NUM"
+        tokens[i] = tokens[i].lower().strip()
+        labels[i] = labels[i].lower().strip()
+    tokens = replace_rare(tokens)
     tokens = np.array(tokens[1:])
     labels = np.array(labels[1:])
     vocab = set(tokens)  # build a vocabulary of unique tokens
+
     labels_vocab = set(labels)
 
     # Map words to their corresponding index in the vocabulary (word:idx)
     word_to_idx = {word: i for i, word in enumerate(vocab)}
     labels_to_idx = {word: i for i, word in enumerate(labels_vocab)}
+
+    idx_to_label = {i: label for label, i in labels_to_idx.items()}
+    idx_to_word = {i: word for word, i in word_to_idx.items()}
 
     # For each window, map tokens to their index in the vocabulary
     tokens_idx = [word_to_idx[word] for word in tokens]
@@ -236,11 +291,11 @@ def main():
 
 
 if __name__ == "__main__":
-    # if torch.cuda.is_available():
-    #     device = torch.device("cuda")
-    #     torch.cuda.device(0)
-    #     torch.cuda.set_device(0)
-    # else:
-    #     device = torch.device("cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        torch.cuda.device(0)
+        torch.cuda.set_device(0)
+    else:
+        device = torch.device("cpu")
     # cProfile.run("main()")
     main()
