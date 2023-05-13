@@ -4,8 +4,6 @@ import torch.nn.functional as F
 import numpy as np
 import os
 from torch.utils.data import DataLoader, TensorDataset
-import cProfile
-import pstats
 
 idx_to_label = {}
 idx_to_word = {}
@@ -46,16 +44,10 @@ class Tagger(nn.Module):
         self.activate = nn.Tanh()
 
     def forward(self, x, windows):
-        # get embedding vector for input
-        # x = idx_to_window_torch(x, windows, self.embedding_matrix)
-        
-        # Find the corresponding embeddings vectors and then concatenate them into one long vector.
-        #x = self.embedding_matrix(x).view(-1, 250)
         
         # Embeds each word index in a batch of sentences into a dense vector representation using the embedding matrix, and concatenates the resulting embeddings along 
         # the second dimension to create a tensor of shape (batch_size, seq_len * embedding_dim).
         x = torch.cat([self.embedding_matrix(x[:, i]) for i in range(x.shape[1])], dim=1)
-        # x = self.embedding_matrix(x)
         x = self.in_linear(x)
         x = self.activate(x)
         x = self.out_linear(x)
@@ -72,7 +64,7 @@ def train_model(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     # sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
     model.train()
-    # dropout = nn.Dropout(p=0.5)
+    dropout = nn.Dropout(p=0)
 
     for j in range(epochs):
         train_loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True)
@@ -80,9 +72,8 @@ def train_model(
         for i, data in enumerate(train_loader, 0):
             x, y = data
             optimizer.zero_grad(set_to_none=True)
-            # x = idx_to_window_torch(x, windows, model.embedding_matrix)
             y_hat = model.forward(x, windows)
-            # y_hat = dropout(y_hat)
+            y_hat = dropout(y_hat)
             loss = F.cross_entropy(y_hat, y)
             loss.backward()
             train_loss += loss.item()
@@ -98,7 +89,7 @@ def train_model(
             for k, data in enumerate(dev_loader, 0):
                 x, y = data
                 y_hat = model.forward(x, windows)
-                # y_hat = dropout(y_hat)
+                y_hat = dropout(y_hat)
                 val_loss = F.cross_entropy(y_hat, y)
                 # Create a list of predicted labels and actual labels
                 y_hat_labels = [idx_to_label[i.item()] for i in y_hat.argmax(dim=1)]
@@ -153,20 +144,7 @@ def replace_rare(dataset):
 
 
 def read_data(fname, window_size=2):
-    """
-    Read data from a file and return token and label indices, vocabulary, and label vocabulary.
 
-    Args:
-        fname (str): The name of the file to read data from.
-        window_size (int, optional): The size of the window for the token,from each side of the word. Defaults to 2.
-
-    Returns:
-        tuple: A tuple containing:
-            - tokens_idx (numpy.ndarray): An array of token indices.
-            - labels_idx (numpy.ndarray): An array of label indices.
-            - vocab (set): A set of unique tokens in the data.
-            - labels_vocab (set): A set of unique labels in the data.
-    """
     global idx_to_label
     global idx_to_word
     data = []           
@@ -249,18 +227,6 @@ def read_data(fname, window_size=2):
 
 
 def idx_to_window_torch(idx, windows, embedding_matrix):
-    """
-    Convert a tensor of word indices into a tensor of word embeddings
-    for a given window size and embedding matrix.
-
-    Args:
-        idx (torch.Tensor): A tensor of word indices of shape (batch_size, window_size).
-        windows (int): The window size.
-        embedding_matrix (torch.Tensor): A tensor of word embeddings.
-
-    Returns:
-        torch.Tensor: A tensor of word embeddings of shape (batch_size, window_size * embedding_size).
-    """
     embedding_size = embedding_matrix.embedding_dim
     batch_size = idx.shape[0]
 
@@ -321,6 +287,4 @@ def main():
 
 
 if __name__ == "__main__":
-
-    # cProfile.run("main()")
     main()
