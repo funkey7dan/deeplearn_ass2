@@ -34,7 +34,7 @@ class Tagger(nn.Module):
             output_size = 5
         else:
             output_size = 36  # assumming https://www.ling.upenn.edu/courses/Fall_2003/ling001/penn_treebank_pos.html
-        hidden_size = 250
+        hidden_size = 150
         window_size = 5
         input_size = (
             embedding_matrix.embedding_dim * window_size
@@ -47,7 +47,14 @@ class Tagger(nn.Module):
 
     def forward(self, x, windows):
         # get embedding vector for input
-        x = idx_to_window_torch(x, windows, self.embedding_matrix)
+        # x = idx_to_window_torch(x, windows, self.embedding_matrix)
+        
+        # Find the corresponding embeddings vectors and then concatenate them into one long vector.
+        #x = self.embedding_matrix(x).view(-1, 250)
+        
+        # Embeds each word index in a batch of sentences into a dense vector representation using the embedding matrix, and concatenates the resulting embeddings along 
+        # the second dimension to create a tensor of shape (batch_size, seq_len * embedding_dim).
+        x = torch.cat([self.embedding_matrix(x[:, i]) for i in range(x.shape[1])], dim=1)
         # x = self.embedding_matrix(x)
         x = self.in_linear(x)
         x = self.activate(x)
@@ -56,15 +63,16 @@ class Tagger(nn.Module):
         return x
 
 
-def train_model(model, input_data, dev_data, windows, epochs=1, lr=0.5):
+def train_model(
+    model, input_data, dev_data, windows, epochs=1, lr=0.001, input_data_win_index=None
+):
     global idx_to_label
     BATCH_SIZE = 32
     # optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     # sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
     model.train()
-
-    # loss_fn = nn.CrossEntropyLoss()
+    # dropout = nn.Dropout(p=0.5)
 
     for j in range(epochs):
         train_loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True)
@@ -72,9 +80,9 @@ def train_model(model, input_data, dev_data, windows, epochs=1, lr=0.5):
         for i, data in enumerate(train_loader, 0):
             x, y = data
             optimizer.zero_grad(set_to_none=True)
+            # x = idx_to_window_torch(x, windows, model.embedding_matrix)
             y_hat = model.forward(x, windows)
-            # loss = loss_fn(y_hat, y)
-            # loss.backward()
+            # y_hat = dropout(y_hat)
             loss = F.cross_entropy(y_hat, y)
             loss.backward()
             train_loss += loss.item()
@@ -90,9 +98,12 @@ def train_model(model, input_data, dev_data, windows, epochs=1, lr=0.5):
             for k, data in enumerate(dev_loader, 0):
                 x, y = data
                 y_hat = model.forward(x, windows)
+                # y_hat = dropout(y_hat)
                 val_loss = F.cross_entropy(y_hat, y)
+                # Create a list of predicted labels and actual labels
                 y_hat_labels = [idx_to_label[i.item()] for i in y_hat.argmax(dim=1)]
                 y_labels = [idx_to_label[i.item()] for i in y]
+                # Count the number of correct labels th
                 y_agreed = sum(
                     [
                         1 if (i == j and j != "o") else 0
@@ -122,7 +133,7 @@ def replace_rare(dataset):
     from collections import Counter
 
     # Define a threshold for word frequency
-    threshold = 5
+    threshold = 2
 
     # Load the dataset into a list of strings (one string per document)
 
@@ -177,8 +188,8 @@ def read_data(fname, window_size=2):
     tokens = replace_rare(tokens)
     tokens = np.array(tokens[1:])
     labels = np.array(labels[1:])
-    vocab = set(tokens)  # build a vocabulary of unique tokens
-
+    vocab = set(tokens) # build a vocabulary of unique tokens
+    vocab.add("<PAD>")
     labels_vocab = set(labels)
 
     # Map words to their corresponding index in the vocabulary (word:idx)
@@ -198,33 +209,23 @@ def read_data(fname, window_size=2):
     # Create windows, each window will be of size window_size, padded with -1
     # for token of index i, w_i the window is: ([w_i-2,w_i-1 i, w_i+1,w_i+2],label of w_i)
     windows = []
+    windows_dict = {}
     for i in range(len(tokens_idx)):
         start = max(0, i - window_size)
         end = min(len(tokens_idx), i + window_size + 1)
         context = (
             tokens_idx[start:i]
-            + [-1] * (window_size - i + start)
+            + [word_to_idx["<PAD>"]] * (window_size - i + start)
             + tokens_idx[i:end]
-            + [-1] * (window_size - end + i + 1)
+            + [word_to_idx["<PAD>"]] * (window_size - end + i + 1)
         )
         label = labels_idx[i]
         windows.append((context, label))
+        windows_dict[i] = (context, label)
 
     tokens_idx = torch.tensor(tokens_idx)
     labels_idx = torch.tensor(labels_idx)
-    return tokens_idx, labels_idx, windows, vocab, labels_vocab
-
-
-# def idx_to_window_torch(idx, windows, embedding_matrix):
-#     t_new = torch.tensor([])
-#     tensors = []
-#     for t in windows[idx][0]:
-#         if t != -1:
-#             t = embedding_matrix(torch.tensor(t))
-#         else:
-#             t = torch.zeros(embedding_matrix.embedding_dim)
-#         tensors.append(t)
-#     return torch.cat(tensors)
+    return tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict
 
 
 def idx_to_window_torch(idx, windows, embedding_matrix):
@@ -272,19 +273,28 @@ def idx_to_window_torch(idx, windows, embedding_matrix):
 
 
 def main():
-    tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/train")
+    tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict = read_data(
+        "./ner/train"
+    )
     # embedding_matrix = np.zeros((len(vocab), 50)) #create an empty embedding matrix, each vector is size 50
     embedding_matrix = nn.Embedding(len(vocab), 50, _freeze=False)
     embedding_matrix.weight.requires_grad = True
     nn.init.xavier_uniform_(embedding_matrix.weight)
     model = Tagger("ner", vocab, labels_vocab, embedding_matrix)
-    dataset = TensorDataset(tokens_idx, labels_idx)
-    tokens_idx_dev, labels_idx_dev, windows, vocab, labels_vocab = read_data(
-        "./ner/dev"
-    )
-    dev_dataset = TensorDataset(tokens_idx, labels_idx)
+    tokenx_idx_new = torch.tensor([window for window, label in windows])
+    dataset = TensorDataset(tokenx_idx_new, labels_idx)
+    (
+        tokens_idx_dev,
+        labels_idx_dev,
+        windows_dev,
+        vocab,
+        labels_vocab,
+        windows_dict,
+    ) = read_data("./ner/dev")
+    tokenx_idx_dev_new = torch.tensor([window for window, label in windows_dev])
+    dev_dataset = TensorDataset(tokenx_idx_dev_new, labels_idx_dev)
     train_model(
-        model, input_data=dataset, dev_data=dev_dataset, epochs=3, windows=windows
+        model, input_data=dataset, dev_data=dev_dataset, epochs=10, windows=windows
     )
 
     # tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
@@ -295,7 +305,9 @@ if __name__ == "__main__":
         device = torch.device("cuda")
         torch.cuda.device(0)
         torch.cuda.set_device(0)
+        print("Using GPU")
     else:
         device = torch.device("cpu")
+        print("Using CPU")
     # cProfile.run("main()")
     main()
