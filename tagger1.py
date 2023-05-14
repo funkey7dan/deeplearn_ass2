@@ -29,11 +29,26 @@ class Tagger(nn.Module):
     """
 
     def __init__(self, task, vocab, labels_vocab, embedding_matrix):
+        """
+        Initializes a Tagger object.
+
+        Args:
+            task (str): The task to perform with the model (e.g., "ner" or "pos").
+            vocab (set): The vocabulary object for the input data.
+            labels_vocab (set): The vocabulary object for the output labels.
+            embedding_matrix (torch.nn.Embedding): The matrix of pre-trained embeddings.
+
+        Returns:
+            None
+        """
+
         super(Tagger, self).__init__()
         if task == "ner":
             output_size = 5
         else:
             output_size = 36  # assumming https://www.ling.upenn.edu/courses/Fall_2003/ling001/penn_treebank_pos.html
+
+        output_size = len(labels_vocab)  # TODO check if it works for us
         hidden_size = 150
         window_size = 5
         input_size = (
@@ -45,11 +60,19 @@ class Tagger(nn.Module):
         self.embedding_matrix = embedding_matrix
         self.activate = nn.Tanh()
 
-    def forward(self, x, windows):
+    def forward(self, x):
         """
+        Forward pass of the tagger.
         Expects x of shape (batch_size, window total size), which means 32 windows for example.
+
+        Args:
+            x: A tensor of shape (batch_size, seq_len) of word indices.
+
+        Returns:
+            A tensor of shape (batch_size, output_dim).
         """
-        # Embeds each word index in a batch of sentences into a dense vector representation using the embedding matrix, and concatenates the resulting embeddings along
+        # Embeds each word index in a batch of sentences into a dense vector representation using the embedding matrix,
+        # and concatenates the resulting embeddings along
         # the second dimension to create a tensor of shape (batch_size, seq_len * embedding_dim).
         x = torch.cat(
             [self.embedding_matrix(x[:, i]) for i in range(x.shape[1])], dim=1
@@ -64,6 +87,20 @@ class Tagger(nn.Module):
 def train_model(
     model, input_data, dev_data, windows, epochs=1, lr=0.01, input_data_win_index=None
 ):
+    """
+    Trains a given model using the provided input and development data.
+    Args:
+            model: The model to train.
+            input_data: The training data.
+            dev_data: The development data to evaluate the model.
+            windows: The size of the windows to use.
+            epochs: The number of epochs to train the model for. Default value is 1.
+            lr: The learning rate to use. Default value is 0.01.
+            input_data_win_index: The index of the window in the input data. Default value is None.
+    Returns:
+            A list of the accuracy of the model on the development data at the end of each epoch.
+    """
+
     global idx_to_label
     BATCH_SIZE = 32
     # optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
@@ -74,6 +111,7 @@ def train_model(
     print(
         f"Before Training, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
     )
+
     results = []
     for j in range(epochs):
         model.train()
@@ -82,7 +120,7 @@ def train_model(
         for i, data in enumerate(train_loader, 0):
             x, y = data
             optimizer.zero_grad(set_to_none=True)
-            y_hat = model.forward(x, windows)
+            y_hat = model.forward(x)
             y_hat = dropout(y_hat)
             loss = F.cross_entropy(y_hat, y)
             loss.backward()
@@ -99,6 +137,19 @@ def train_model(
 
 
 def test_model(model, input_data, windows):
+    """
+    This function tests a PyTorch model on given input data and returns the validation loss, overall accuracy, and
+    accuracy excluding "O" labels. It takes in the following parameters:
+
+    - model: a PyTorch model to be tested
+    - input_data: a dataset to test the model on
+    - windows: a parameter that is not used in the function
+
+    The function first initializes a batch size of 32 and a global variable idx_to_label. It then creates a DataLoader
+    object with the input_data and the batch size, and calculates the validation loss, overall accuracy, and accuracy
+    excluding "O" labels. These values are returned as a tuple.
+    """
+
     BATCH_SIZE = 32
     global idx_to_label
 
@@ -111,7 +162,7 @@ def test_model(model, input_data, windows):
         to_remove = 0
         for k, data in enumerate(loader, 0):
             x, y = data
-            y_hat = model.forward(x, windows)
+            y_hat = model.forward(x)
             # y_hat = dropout(y_hat)
             val_loss = F.cross_entropy(y_hat, y)
             # Create a list of predicted labels and actual labels
@@ -128,9 +179,6 @@ def test_model(model, input_data, windows):
             count_no_o += y_agreed
             to_remove += y_labels.count("O")
             running_val_loss += val_loss.item()
-    # print(
-    #     f"Epoch {j}, Loss: {train_loss/i}, Dev Loss: {running_val_loss/k}, Dev Acc: {count/(k*BATCH_SIZE)} Acc No O:{count_no_o/((k*BATCH_SIZE)-to_remove)}"
-    # )
 
     return (
         running_val_loss / k,
@@ -162,10 +210,37 @@ def replace_rare(dataset):
     return updated
 
 
-def read_data(fname, window_size=2, vocab=None, labels_vocab=None, type="train"):
+def read_data(
+    fname, window_size=2, vocab=None, labels_vocab=None, type="train", task=None
+):
+    """
+    Reads in data from a file and preprocesses it for use in a neural network model.
+
+    Args:
+        fname (str): The name of the file to read data from.
+        window_size (int, optional): The size of the context window to use when creating windows. Defaults to 2.
+        vocab (set, optional): A set of unique tokens to use as the vocabulary. If not provided, a vocabulary will be built from the data. Defaults to None.
+        labels_vocab (set, optional): A set of unique labels to use for classification. If not provided, labels will be inferred from the data. Defaults to None.
+        type (str, optional): A string indicating the type of data being read. Defaults to "train".
+
+    Returns:
+        tuple: A tuple containing the preprocessed data:
+            - tokens_idx (torch.Tensor): A tensor of indices representing the tokens in the data.
+            - labels_idx (torch.Tensor): A tensor of indices representing the labels in the data.
+            - windows (list): A list of tuples representing the context windows and labels for each token in the data.
+            - vocab (set): A set of unique tokens used as the vocabulary.
+            - labels_vocab (set): A set of unique labels used for classification.
+            - windows_dict (dict): A dictionary mapping token indices to their corresponding context windows and labels.
+            - task (str): The task to perform.
+    """
+
     global idx_to_label
     global idx_to_word
     data = []
+    if task == "ner":
+        SEPARATOR = "\t"
+    else:
+        SEPARATOR = " "
 
     with open(fname) as f:
         lines = f.readlines()
@@ -180,7 +255,7 @@ def read_data(fname, window_size=2, vocab=None, labels_vocab=None, type="train")
                 labels = []
                 continue
             if type != "test":
-                token, label = line.split("\t")
+                token, label = line.split(SEPARATOR)
             else:
                 token = line.strip()
                 label = ""
@@ -258,49 +333,25 @@ def read_data(fname, window_size=2, vocab=None, labels_vocab=None, type="train")
     return tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict
 
 
-# def idx_to_window_torch(idx, windows, embedding_matrix):
-#     embedding_size = embedding_matrix.embedding_dim
-#     batch_size = idx.shape[0]
-
-#     # Map the idx_to_window() function to each index in the tensor using PyTorch's map() function
-#     windows = torch.tensor(list(map(lambda x: windows[x][0], idx.tolist())))
-#     window_size = windows.size()[1]
-#     # Use torch.reshape to flatten the tensor of windows into a 2D tensor
-#     windows_flat = torch.reshape(windows, (batch_size, -1))
-
-#     # Index into the embedding matrix to get the embeddings for each word in each window
-#     # Add a check to ensure that the input word index is within the bounds of the embedding matrix
-#     embeddings = []
-#     for i in range(batch_size):
-#         window = windows_flat[i]
-#         window_embeddings = []
-#         for j in range(window_size):
-#             word_idx = window[j].item()
-#             if word_idx >= embedding_matrix.num_embeddings or word_idx == -1:
-#                 # If the word index is out of bounds, use the zero vector as the embedding
-#                 embed = torch.zeros((embedding_size,))
-#             else:
-#                 embed = embedding_matrix(torch.tensor(word_idx))
-#             window_embeddings.append(embed)
-#         embeddings.append(torch.cat(window_embeddings))
-
-#     # Use torch.stack to stack the tensor of embeddings into a 2D tensor
-#     embeddings = torch.stack(embeddings)
-
-#     return embeddings
-
-
-def main():
+def main(task="ner"):
     tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict = read_data(
-        "./ner/train"
+        f"./{task}/train", task=task
     )
-    # embedding_matrix = np.zeros((len(vocab), 50)) #create an empty embedding matrix, each vector is size 50
+    # create an empty embedding matrix, each vector is size 50
     embedding_matrix = nn.Embedding(len(vocab), 50, _freeze=False)
     embedding_matrix.weight.requires_grad = True
+
+    # initialize the embedding matrix to random values using xavier initialization which is a good initialization for NLP tasks
     nn.init.xavier_uniform_(embedding_matrix.weight)
-    model = Tagger("ner", vocab, labels_vocab, embedding_matrix)
+
+    model = Tagger(task, vocab, labels_vocab, embedding_matrix)
+
+    # Make a new tensor out of the windows, so the tokens are windows of size window_size in the dataset
     tokenx_idx_new = torch.tensor([window for window, label in windows])
+
     dataset = TensorDataset(tokenx_idx_new, labels_idx)
+
+    # Load the dev data
     (
         tokens_idx_dev,
         labels_idx_dev,
@@ -308,16 +359,18 @@ def main():
         vocab,
         labels_vocab,
         windows_dict,
-    ) = read_data("./ner/dev", vocab=vocab, labels_vocab=labels_vocab)
-    # def read_data(fname, window_size=2,vocab=None,labels_vocab=None):
+    ) = read_data(f"./{task}/dev", task=task, vocab=vocab, labels_vocab=labels_vocab)
+
     tokenx_idx_dev_new = torch.tensor([window for window, label in windows_dev])
     dev_dataset = TensorDataset(tokenx_idx_dev_new, labels_idx_dev)
+    # Get the dev loss from the model training
     results = train_model(
         model, input_data=dataset, dev_data=dev_dataset, epochs=10, windows=windows
     )
     # Plot the dev loss, and save
-    plt.plot(results, label="dev loss")
-    plt.savefig("loss.png")
+    p = plt.plot(results, label="dev loss")
+    plt.title(f"{task} task")
+    plt.savefig(f"loss_{task}.png")
 
     # test_data
     # dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows)
@@ -333,4 +386,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main("ner")
