@@ -12,22 +12,6 @@ idx_to_word = {}
 
 
 class Tagger(nn.Module):
-    # TODO clean this description
-    """
-    A sequence tagger,where
-    the input is a sequence of items(in our case, a sentence of natural-language words),
-    and an output is a label for each of the item.
-    The tagger will be greedy/local and window-based. For a sequence of words
-    w1,...,wn, the tag of word wi will be based on the words in a window of
-    two words to each side of the word being tagged: wi-2,wi-1,wi,wi+1,wi+2.
-    'Greedy/local' here means that the tag assignment for word i will not depend on the tags of other words
-    each word in the window will be assigned a 50 dimensional embedding vector, using an embedding matrix E.
-    MLP with one hidden layer and tanh activation function.
-    The output of the MLP will be passed through a softmax transformation, resulting in a probability distribution.
-    The network will be trained with a cross-entropy loss.
-    The vocabulary of E will be based on the words in the training set (you are not allowed to add to E words that appear only in the dev set).
-    """
-
     def __init__(self, task, vocab, labels_vocab, embedding_matrix):
         """
         Initializes a Tagger object.
@@ -41,7 +25,6 @@ class Tagger(nn.Module):
         Returns:
             None
         """
-
         super(Tagger, self).__init__()
         if task == "ner":
             output_size = 5
@@ -56,7 +39,6 @@ class Tagger(nn.Module):
         )  # 5 concat. 50 dimensional embedding vectors, output over labels
         self.in_linear = nn.Linear(input_size, hidden_size)
         self.out_linear = nn.Linear(hidden_size, output_size)
-        # self.softmax = nn.Softmax()
         self.embedding_matrix = embedding_matrix
         self.activate = nn.Tanh()
 
@@ -84,7 +66,6 @@ class Tagger(nn.Module):
         x = self.in_linear(x)
         x = self.activate(x)
         x = self.out_linear(x)
-        # x = self.softmax(x) #TODO: we are using cross-entropy loss therefore we maybe don't need softmax
         return x
 
 
@@ -114,16 +95,17 @@ def train_model(
 
     global idx_to_label
     BATCH_SIZE = 256
-    # optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
+    sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)   # scheduler that every 3 epochs it updates the lr
     dropout = nn.Dropout(p=0.5)
     dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows, task=task)
     print(
         f"Before Training, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
     )
 
-    results = []
+    dev_loss_results = []
+    dev_acc_results = []
+    dev_acc_no_o_results = []
     for j in range(epochs):
         model.train()
         train_loader = DataLoader(
@@ -152,8 +134,10 @@ def train_model(
                 f"Epoch {j+1}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc}"
             )
         sched.step()
-        results.append(dev_loss)
-    return results
+        dev_loss_results.append(dev_loss)
+        dev_acc_results.append(dev_acc)
+        dev_acc_no_o_results.append(dev_acc_clean)
+    return dev_loss_results, dev_acc_results, dev_acc_no_o_results
 
 
 def test_model(model, input_data, windows, task):
@@ -308,6 +292,7 @@ def read_data(
     if not labels_vocab:
         labels_vocab = set(all_labels)
 
+    # TODO where do we use all_tokens ?
     all_tokens = replace_rare(all_tokens)
 
     # Map words to their corresponding index in the vocabulary (word:idx)
@@ -349,6 +334,7 @@ def read_data(
             label = labels_idx[i]
             windows.append((context, label))
             # windows_dict[i] = (context, label)
+    # TODO maybe we don't need to calculate it and return it ?
     tokens_idx = torch.tensor(tokens_idx_all)
     labels_idx = torch.tensor(labels_idx_all)
     return tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict
@@ -385,26 +371,44 @@ def main(task="ner"):
     tokenx_idx_dev_new = torch.tensor([window for window, label in windows_dev])
     dev_dataset = TensorDataset(tokenx_idx_dev_new, labels_idx_dev)
     # Get the dev loss from the model training
-    results = train_model(
+    dev_loss, dev_accuracy, dev_accuracy_no_o = train_model(
         model, input_data=dataset, dev_data=dev_dataset, epochs=10, windows=windows
     )
-    # Plot the dev loss, and save
-    p = plt.plot(results, label="dev loss")
-    plt.title(f"{task} task")
-    plt.savefig(f"loss_{task}.png")
+
+
+    # # Plot the dev loss, and save
+    # plt.plot(dev_loss, label="dev loss")
+    # plt.title(f"{task} task")
+    # plt.savefig(f"loss_{task}.png")
+    # plt.show()
+    #
+    # # Plot the dev accuracy, and save
+    # plt.plot(dev_accuracy, label="dev accuracy")
+    # plt.title(f"{task} task")
+    # plt.savefig(f"accuracy_{task}.png")
+    # plt.show()
+    #
+    # # Plot the dev accuracy no O, and save
+    # plt.plot(dev_accuracy_no_o, label="dev accuracy no o")
+    # plt.title(f"{task} task")
+    # plt.savefig(f"accuracy_no_O{task}.png")
+    # plt.show()
+
+    print()
+    print("Test")
 
     # test_data
-    # dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows)
+    dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_dataset, windows, task="ner")
 
-    # print(
-    #     f"Test Loss: {dev_loss}, Test Acc: {dev_acc} Acc No O:{dev_acc_clean}"
-    # )
-    # tokens_idx_test, labels_idx_test, windows_test, vocab_test, labels_vocab_test, windows_dict_test = read_data(
-    #     "./ner/test",type="test"
-    # )
+    print(
+        f"Test Loss: {dev_loss}, Test Acc: {dev_acc} Acc No O:{dev_acc_clean}"
+    )
+    tokens_idx_test, labels_idx_test, windows_test, vocab_test, labels_vocab_test, windows_dict_test = read_data(
+        "./ner/test", type="test"
+    )
 
     # tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
 
 
 if __name__ == "__main__":
-    main("pos")
+    main("ner")
