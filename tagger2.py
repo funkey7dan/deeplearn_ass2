@@ -345,14 +345,17 @@ def load_embedding_matrix(embedding_path):
 
 
 def main(task="ner"):
-    vocab, vecs = load_embedding_matrix(f"./wordVectors.txt")
+    _, vecs = load_embedding_matrix(f"./wordVectors.txt")
 
     tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict = read_data(
-        f"./{task}/train", task=task,vocab=vocab
+        f"./{task}/train", task=task
     )
     # create an empty embedding matrix, each vector is size 50
     # embedding_matrix = nn.Embedding(len(vocab), 50, _freeze=False)
-    embedding_matrix = nn.Embedding.from_pretrained(vecs, freeze=False,)
+    embedding_matrix = nn.Embedding.from_pretrained(
+        vecs,
+        freeze=False,
+    )
     embedding_matrix.weight.requires_grad = True
 
     # initialize the embedding matrix to random values using xavier initialization which is a good initialization for NLP tasks
