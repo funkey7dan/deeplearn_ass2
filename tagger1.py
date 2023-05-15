@@ -113,7 +113,7 @@ def train_model(
     """
 
     global idx_to_label
-    BATCH_SIZE = 32
+    BATCH_SIZE = 256
     # optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
@@ -217,11 +217,8 @@ def replace_rare(dataset):
     # Define a threshold for word frequency
     threshold = 2
 
-    # Tokenize the dataset into a list of words
-    words = [word for doc in dataset for word in doc.split()]
-
     # Count the frequency of each word
-    word_counts = Counter(words)
+    word_counts = Counter(dataset)
 
     # Find the set of rare words (words that occur less than the threshold)
     rare_words = set(word for word in word_counts if word_counts[word] < threshold)
@@ -310,6 +307,8 @@ def read_data(
         vocab.add("<UNK>")  # add an unknown token
     if not labels_vocab:
         labels_vocab = set(all_labels)
+
+    all_tokens = replace_rare(all_tokens)
 
     # Map words to their corresponding index in the vocabulary (word:idx)
     word_to_idx = {word: i for i, word in enumerate(vocab)}
@@ -408,4 +407,4 @@ def main(task="ner"):
 
 
 if __name__ == "__main__":
-    main("ner")
+    main("pos")
