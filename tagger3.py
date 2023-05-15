@@ -28,7 +28,16 @@ class Tagger(nn.Module):
     The vocabulary of E will be based on the words in the training set (you are not allowed to add to E words that appear only in the dev set).
     """
 
-    def __init__(self, task, vocab, labels_vocab, embedding_matrix,embedding_matrix_prefixes,embedding_matrix_suffixes,window_size = 5):
+    def __init__(
+        self,
+        task,
+        vocab,
+        labels_vocab,
+        embedding_matrix,
+        embedding_matrix_prefixes,
+        embedding_matrix_suffixes,
+        window_size=5,
+    ):
         """
         Initializes a Tagger object.
 
@@ -50,6 +59,7 @@ class Tagger(nn.Module):
 
         output_size = len(labels_vocab)  # TODO check if it works for us
         hidden_size = 150
+        window_size = 5
         input_size = (
             embedding_matrix.embedding_dim * window_size
         )  # 5 concat. 50 dimensional embedding vectors, output over labels
@@ -61,7 +71,7 @@ class Tagger(nn.Module):
         self.embedding_matrix_suffixes = embedding_matrix_suffixes
         self.activate = nn.Tanh()
 
-    def forward(self, x):
+    def forward(self, x, pref, suf):
         """
         Forward pass of the tagger.
         Expects x of shape (batch_size, window total size), which means 32 windows for example.
@@ -72,18 +82,20 @@ class Tagger(nn.Module):
         Returns:
             A tensor of shape (batch_size, output_dim).
         """
-        # Embeds each word index in a batch of sentences into a dense vector representation using the embedding matrix,
-        # and concatenates the resulting embeddings along
-        # the second dimension to create a tensor of shape (batch_size, seq_len * embedding_dim).
+        # Concatenate the word embedding vectors of the words in the window to create a single vector for the window.
+        # x.shape[1] is the size of window, which is 5 in our case.
+        # self.embedding_matrix(x[:,i]) is the 32 x 50 embedding matrix of the i'th items in the window.
+        # torch.cat concatenates the 5 32 x 50 embedding matrix of the i'th items in the window to a 32 x 250 matrix, which we can pass to the linear layer.
         # x = torch.cat(
         #     [self.embedding_matrix(x[:, i]) for i in range(x.shape[1])], dim=1
         # )
-        #x = torch.add(self.embedding_matrix(x),torch.add(self.embedding_matrix_prefixes(x),self.embedding_matrix_suffixes(x)))
-        x = self.embedding_matrix(x)
-        y = self.embedding_matrix_prefixes(x)
-        z = self.embedding_matrix_suffixes(x)
-        #x = self.embedding_matrix_prefixes(x) + self.embedding_matrix_suffixes(x) + self.embedding_matrix(x)
-        sum_tensor = torch.sum(torch.stack([x, y, z], dim=0), dim=0)
+
+        x = self.embedding_matrix(x).view(
+            -1, 250
+        )  # Faster than the above and equivalent
+        prefixes = self.embedding_matrix_prefixes(pref).view(-1, 250)
+        suffixes = self.embedding_matrix_suffixes(suf).view(-1, 250)
+        x = x + prefixes + suffixes
         x = self.in_linear(x)
         x = self.activate(x)
         x = self.out_linear(x)
@@ -125,9 +137,9 @@ def train_model(
         train_loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True)
         train_loss = 0
         for i, data in enumerate(train_loader, 0):
-            x, y = data
+            x, pref, suf, y = data
             optimizer.zero_grad(set_to_none=True)
-            y_hat = model.forward(x)
+            y_hat = model.forward(x, pref, suf)
             y_hat = dropout(y_hat)
             loss = F.cross_entropy(y_hat, y)
             loss.backward()
@@ -168,8 +180,8 @@ def test_model(model, input_data, windows):
         count_no_o = 0
         to_remove = 0
         for k, data in enumerate(loader, 0):
-            x, y = data
-            y_hat = model.forward(x)
+            x, pref, suf, y = data
+            y_hat = model.forward(x, pref, suf)
             # y_hat = dropout(y_hat)
             val_loss = F.cross_entropy(y_hat, y)
             # Create a list of predicted labels and actual labels
@@ -289,17 +301,23 @@ def read_data(
         sentence[1].clear()
         sentence[1].extend(labels)
     # tokens = replace_rare(tokens)
+    all_tokens.extend(["<PAD>", "<UNK>"])
     if not vocab:
+        # all_tokens.extend(["<PAD>","<UNK>"])
         vocab = set(all_tokens)  # build a vocabulary of unique tokens
-    vocab.add("<PAD>")  # add a padding token
-    vocab.add("<UNK>")  # add an unknown token
+    # vocab.add("<PAD>")  # add a padding token
+    # vocab.add("<UNK>")  # add an unknown token
     if not labels_vocab:
         labels_vocab = set(all_labels)
+
+    prefixes_vocab = set([word[:3] for word in all_tokens])
+    suffixes_vocab = set([word[-3:] for word in all_tokens])
+    prefix_to_idx = {word: i for i, word in enumerate(prefixes_vocab)}
+    suffixes_to_idx = {word: i for i, word in enumerate(suffixes_vocab)}
 
     # Map words to their corresponding index in the vocabulary (word:idx)
     word_to_idx = {word: i for i, word in enumerate(vocab)}
 
-    prefix_to_idx = {word: i for i, word in enumerate(vocab)}
     labels_to_idx = {word: i for i, word in enumerate(labels_vocab)}
 
     idx_to_label = {i: label for label, i in labels_to_idx.items()}
@@ -307,18 +325,44 @@ def read_data(
 
     # Create windows, each window will be of size window_size, padded with -1
     # for token of index i, w_i the window is: ([w_i-2,w_i-1 i, w_i+1,w_i+2],label of w_i)
+    # TODO: add prefix and suffix in this manner:
+    # assign an embedding vector to each prefix of 3 letters and each
+    # suffix of 3 letters (among the prefixes and suffixes that were observed in the
+    # corpus). Then, you can represent each word as a sum of the word vector, the
+    # prefix vector and the suffix vector.
     windows = []
+    prefix_windows = []
+    suffix_windows = []
     windows_dict = {}
     tokens_idx_all = []
     labels_idx_all = []
+    prefix_idx_all = []
+    suffix_idx_all = []
+
     for sentence in sentences:
         tokens, labels = sentence
+
         # map tokens to their index in the vocabulary
         tokens_idx = [
             word_to_idx[word] if word in word_to_idx else word_to_idx["<UNK>"]
             for word in tokens
         ]
+        prefix_idx = [
+            prefix_to_idx[word[:3]]
+            if word[:3] in prefix_to_idx
+            else prefix_to_idx["<UNK>"]
+            for word in tokens
+        ]
+        suffix_idx = [
+            suffixes_to_idx[word[-3:]]
+            if word[-3:] in suffixes_to_idx
+            else suffixes_to_idx["<UNK>"]
+            for word in tokens
+        ]
+        prefix_idx_all.extend(prefix_idx)
+        suffix_idx_all.extend(suffix_idx)
         tokens_idx_all.extend(tokens_idx)
+
         labels_idx = [
             labels_to_idx[label] if label in labels_to_idx else labels_to_idx["O"]
             for label in labels
@@ -334,12 +378,41 @@ def read_data(
                 + tokens_idx[i:end]
                 + [word_to_idx["<PAD>"]] * (window_size - end + i + 1)
             )
+            prefix_context = (
+                [prefix_to_idx["<PA"]] * (window_size - i + start)
+                + prefix_idx[start:i]
+                + prefix_idx[i:end]
+                + [prefix_to_idx["<PA"]] * (window_size - end + i + 1)
+            )
+            suffix_context = (
+                [suffixes_to_idx["AD>"]] * (window_size - i + start)
+                + suffix_idx[start:i]
+                + suffix_idx[i:end]
+                + [suffixes_to_idx["AD>"]] * (window_size - end + i + 1)
+            )
             label = labels_idx[i]
             windows.append((context, label))
+            prefix_windows.append(prefix_context)
+            suffix_windows.append(suffix_context)
             # windows_dict[i] = (context, label)
+
     tokens_idx = torch.tensor(tokens_idx_all)
     labels_idx = torch.tensor(labels_idx_all)
-    return tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict
+    suffix_idx = torch.tensor(suffix_idx_all)
+    prefix_idx = torch.tensor(prefix_idx_all)
+
+    return (
+        tokens_idx,
+        labels_idx,
+        windows,
+        vocab,
+        labels_vocab,
+        windows_dict,
+        prefix_windows,
+        suffix_windows,
+        prefixes_vocab,
+        suffixes_vocab,
+    )
 
 
 def load_embedding_matrix(embedding_path):
@@ -354,36 +427,56 @@ def load_embedding_matrix(embedding_path):
 
 
 def main(task="ner"):
-    vocab, vecs = load_embedding_matrix(f"./wordVectors.txt")
-
-    tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict = read_data(
-        f"./{task}/train", task=task, vocab=vocab
-    )
+    _, vecs = load_embedding_matrix(f"./wordVectors.txt")
+    (
+        tokens_idx,
+        labels_idx,
+        windows,
+        vocab,
+        labels_vocab,
+        windows_dict,
+        prefix_windows,
+        suffix_windows,
+        prefixes_vocab,
+        suffixes_vocab,
+    ) = read_data(f"./{task}/train", task=task)
     # Create embedding matrices for the prefixes and suffixes
-    vocab_prefixes = set([word[:3] for word in vocab if len(word) > 3])
-    vocab_suffixes = set([word[-3:] for word in vocab if len(word) > 3])
-    embedding_matrix_prefixes = nn.Embedding(len(vocab), 50)
+
+    embedding_matrix_prefixes = nn.Embedding(len(prefixes_vocab), 50)
     nn.init.xavier_uniform_(embedding_matrix_prefixes.weight)
-    embedding_matrix_suffixes = nn.Embedding(len(vocab), 50)
+    embedding_matrix_suffixes = nn.Embedding(len(suffixes_vocab), 50)
     nn.init.xavier_uniform_(embedding_matrix_suffixes.weight)
 
     # create an empty embedding matrix, each vector is size 50
-    # embedding_matrix = nn.Embedding(len(vocab), 50, _freeze=False)
-    embedding_matrix = nn.Embedding.from_pretrained(
-        vecs,
-        freeze=False,
-    )
+    embedding_matrix = nn.Embedding(len(vocab), 50, _freeze=False)
+    # initialize the embedding matrix to random values using xavier initialization which is a good initialization for NLP tasks
+    nn.init.xavier_uniform_(embedding_matrix.weight)
+
+    # embedding_matrix = nn.Embedding.from_pretrained(
+    #     vecs,
+    #     freeze=False,
+    # )
     embedding_matrix.weight.requires_grad = True
 
-    # initialize the embedding matrix to random values using xavier initialization which is a good initialization for NLP tasks
-    # nn.init.xavier_uniform_(embedding_matrix.weight)
-
-    model = Tagger(task, vocab, labels_vocab, embedding_matrix, embedding_matrix_prefixes, embedding_matrix_suffixes,window_size=1)
+    model = Tagger(
+        task,
+        vocab,
+        labels_vocab,
+        embedding_matrix,
+        embedding_matrix_prefixes,
+        embedding_matrix_suffixes,
+        window_size=1,
+    )
 
     # Make a new tensor out of the windows, so the tokens are windows of size window_size in the dataset
     tokenx_idx_new = torch.tensor([window for window, label in windows])
 
-    dataset = TensorDataset(tokenx_idx_new, labels_idx)
+    dataset = TensorDataset(
+        tokenx_idx_new,
+        torch.tensor(prefix_windows),
+        torch.tensor(suffix_windows),
+        labels_idx,
+    )
 
     # Load the dev data
     (
@@ -393,10 +486,19 @@ def main(task="ner"):
         vocab,
         labels_vocab,
         windows_dict,
+        prefix_windows,
+        suffix_windows,
+        prefixes_vocab,
+        suffixes_vocab,
     ) = read_data(f"./{task}/dev", task=task, vocab=vocab, labels_vocab=labels_vocab)
 
     tokenx_idx_dev_new = torch.tensor([window for window, label in windows_dev])
-    dev_dataset = TensorDataset(tokenx_idx_dev_new, labels_idx_dev)
+    dev_dataset = TensorDataset(
+        tokenx_idx_dev_new,
+        torch.tensor(prefix_windows),
+        torch.tensor(suffix_windows),
+        labels_idx_dev,
+    )
     # Get the dev loss from the model training
     results = train_model(
         model, input_data=dataset, dev_data=dev_dataset, epochs=10, windows=windows
@@ -420,4 +522,4 @@ def main(task="ner"):
 
 
 if __name__ == "__main__":
-    main("ner")
+    main("pos")

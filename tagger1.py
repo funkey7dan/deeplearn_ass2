@@ -5,7 +5,7 @@ import numpy as np
 import os
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
-
+import time
 
 idx_to_label = {}
 idx_to_word = {}
@@ -63,20 +63,24 @@ class Tagger(nn.Module):
     def forward(self, x):
         """
         Forward pass of the tagger.
-        Expects x of shape (batch_size, window total size), which means 32 windows for example.
+        Expects x of shape (batch_size, window total size), which means 32 windows of 5 for example.
 
         Args:
-            x: A tensor of shape (batch_size, seq_len) of word indices.
+            x: A tensor of shape (batch_size, window total size) of word indices.
 
         Returns:
             A tensor of shape (batch_size, output_dim).
         """
-        # Embeds each word index in a batch of sentences into a dense vector representation using the embedding matrix,
-        # and concatenates the resulting embeddings along
-        # the second dimension to create a tensor of shape (batch_size, seq_len * embedding_dim).
-        x = torch.cat(
-            [self.embedding_matrix(x[:, i]) for i in range(x.shape[1])], dim=1
-        )
+        # Concatenate the word embedding vectors of the words in the window to create a single vector for the window.
+        # x.shape[1] is the size of window, which is 5 in our case.
+        # self.embedding_matrix(x[:,i]) is the 32 x 50 embedding matrix of the i'th items in the window.
+        # torch.cat concatenates the 5 32 x 50 embedding matrix of the i'th items in the window to a 32 x 250 matrix, which we can pass to the linear layer.
+        # x = torch.cat(
+        #     [self.embedding_matrix(x[:, i]) for i in range(x.shape[1])], dim=1
+        # )
+        x = self.embedding_matrix(x).view(
+            -1, 250
+        )  # Faster than the above and equivalent
         x = self.in_linear(x)
         x = self.activate(x)
         x = self.out_linear(x)
@@ -112,9 +116,9 @@ def train_model(
     BATCH_SIZE = 32
     # optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+    sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
     dropout = nn.Dropout(p=0.5)
-    dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows)
+    dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows, task=task)
     print(
         f"Before Training, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
     )
@@ -122,7 +126,9 @@ def train_model(
     results = []
     for j in range(epochs):
         model.train()
-        train_loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True)
+        train_loader = DataLoader(
+            input_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=4
+        )
         train_loss = 0
         for i, data in enumerate(train_loader, 0):
             x, y = data
@@ -167,7 +173,7 @@ def test_model(model, input_data, windows, task):
     BATCH_SIZE = 32
     global idx_to_label
 
-    loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True)
+    loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
     running_val_loss = 0
     with torch.no_grad():
         model.eval()

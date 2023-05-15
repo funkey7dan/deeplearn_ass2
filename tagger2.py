@@ -71,12 +71,16 @@ class Tagger(nn.Module):
         Returns:
             A tensor of shape (batch_size, output_dim).
         """
-        # Embeds each word index in a batch of sentences into a dense vector representation using the embedding matrix,
-        # and concatenates the resulting embeddings along
-        # the second dimension to create a tensor of shape (batch_size, seq_len * embedding_dim).
-        x = torch.cat(
-            [self.embedding_matrix(x[:, i]) for i in range(x.shape[1])], dim=1
-        )
+        # Concatenate the word embedding vectors of the words in the window to create a single vector for the window.
+        # x.shape[1] is the size of window, which is 5 in our case.
+        # self.embedding_matrix(x[:,i]) is the 32 x 50 embedding matrix of the i'th items in the window.
+        # torch.cat concatenates the 5 32 x 50 embedding matrix of the i'th items in the window to a 32 x 250 matrix, which we can pass to the linear layer.
+        # x = torch.cat(
+        #     [self.embedding_matrix(x[:, i]) for i in range(x.shape[1])], dim=1
+        # )
+        x = self.embedding_matrix(x).view(
+            -1, 250
+        )  # Faster than the above and equivalent
         x = self.in_linear(x)
         x = self.activate(x)
         x = self.out_linear(x)
