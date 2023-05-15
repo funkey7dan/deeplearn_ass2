@@ -85,7 +85,14 @@ class Tagger(nn.Module):
 
 
 def train_model(
-    model, input_data, dev_data, windows, epochs=1, lr=0.01, input_data_win_index=None
+    model,
+    input_data,
+    dev_data,
+    windows,
+    epochs=1,
+    lr=0.01,
+    input_data_win_index=None,
+    task="ner",
 ):
     """
     Trains a given model using the provided input and development data.
@@ -127,16 +134,23 @@ def train_model(
             train_loss += loss.item()
             optimizer.step()
         # Evalaute model on dev at the end of each epoch.
-        dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows)
-        print(
-            f"Epoch {j}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
+        dev_loss, dev_acc, dev_acc_clean = test_model(
+            model, dev_data, windows, task=task
         )
+        if task == "ner":
+            print(
+                f"Epoch {j+1}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
+            )
+        else:
+            print(
+                f"Epoch {j+1}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc}"
+            )
         sched.step()
         results.append(dev_acc)
     return results
 
 
-def test_model(model, input_data, windows):
+def test_model(model, input_data, windows, task):
     """
     This function tests a PyTorch model on given input data and returns the validation loss, overall accuracy, and
     accuracy excluding "O" labels. It takes in the following parameters:
@@ -166,19 +180,23 @@ def test_model(model, input_data, windows):
             # y_hat = dropout(y_hat)
             val_loss = F.cross_entropy(y_hat, y)
             # Create a list of predicted labels and actual labels
-            y_hat_labels = [idx_to_label[i.item()] for i in y_hat.argmax(dim=1)]
-            y_labels = [idx_to_label[i.item()] for i in y]
-            # Count the number of correct labels th
-            y_agreed = sum(
-                [
-                    1 if (i == j and j != "O") else 0
-                    for i, j in zip(y_hat_labels, y_labels)
-                ]
-            )
             count += sum(y_hat.argmax(dim=1) == y).item()
-            count_no_o += y_agreed
-            to_remove += y_labels.count("O")
             running_val_loss += val_loss.item()
+            if task == "ner":
+                y_hat_labels = [idx_to_label[i.item()] for i in y_hat.argmax(dim=1)]
+                y_labels = [idx_to_label[i.item()] for i in y]
+                # Count the number of correct labels th
+                y_agreed = sum(
+                    [
+                        1 if (i == j and j != "O") else 0
+                        for i, j in zip(y_hat_labels, y_labels)
+                    ]
+                )
+                count_no_o += y_agreed
+                to_remove += y_labels.count("O")
+            else:
+                count_no_o = count
+                to_remove = 0
 
     return (
         running_val_loss / k,
@@ -192,8 +210,6 @@ def replace_rare(dataset):
 
     # Define a threshold for word frequency
     threshold = 2
-
-    # Load the dataset into a list of strings (one string per document)
 
     # Tokenize the dataset into a list of words
     words = [word for doc in dataset for word in doc.split()]
