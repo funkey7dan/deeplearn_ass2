@@ -129,7 +129,7 @@ def train_model(
         # Evalaute model on dev at the end of each epoch.
         dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows)
         print(
-            f"Epoch {j}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
+            f"Epoch {j}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
         )
         sched.step()
         results.append(dev_acc)
