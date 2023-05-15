@@ -152,7 +152,7 @@ def train_model(
                 f"Epoch {j+1}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc}"
             )
         sched.step()
-        results.append(dev_acc)
+        results.append(dev_loss)
     return results
 
 
