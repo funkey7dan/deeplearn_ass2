@@ -464,9 +464,28 @@ def main(task="ner"):
         windows_dict_test,
         og_tokens,
     ) = read_data(f"./{task}/test", type="test", vocab=vocab, labels_vocab=labels_vocab)
+    # # Plot the dev loss, and save
+    # plt.plot(dev_loss, label="dev loss")
+    # plt.title(f"{task} task")
+    # plt.savefig(f"loss_{task}.png")
+    # plt.show()
+    #
+    # # Plot the dev accuracy, and save
+    # plt.plot(dev_accuracy, label="dev accuracy")
+    # plt.title(f"{task} task")
+    # plt.savefig(f"accuracy_{task}.png")
+    # plt.show()
+    #
+    # # Plot the dev accuracy no O, and save
+    # plt.plot(dev_accuracy_no_o, label="dev accuracy no o")
+    # plt.title(f"{task} task")
+    # plt.savefig(f"accuracy_no_O{task}.png")
+    # plt.show()
 
     token_idx_test_new = torch.tensor([window for window, label in windows_test])
     test_dataset = TensorDataset(token_idx_test_new, labels_idx_test)
+    print()
+    print("Test")
 
     # test_data
     # dev_loss, dev_acc, dev_acc_clean = test_model(
@@ -475,6 +494,15 @@ def main(task="ner"):
     run_inference(model, test_dataset, task, og_tokens)
 
     # print(f"Test Loss: {dev_loss}, Test Acc: {dev_acc} Acc No O:{dev_acc_clean}")
+    dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_dataset, windows, task="ner")
+
+    print(
+        f"Test Loss: {dev_loss}, Test Acc: {dev_acc} Acc No O:{dev_acc_clean}"
+    )
+    tokens_idx_test, labels_idx_test, windows_test, vocab_test, labels_vocab_test, windows_dict_test = read_data(
+        "./ner/test", type="test"
+    )
+
     # tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
 
 
