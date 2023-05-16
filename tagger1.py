@@ -105,6 +105,9 @@ def train_model(
         f"Before Training, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
     )
 
+    best_loss = 100000
+    best_model = None
+
     dev_loss_results = []
     dev_acc_results = []
     dev_acc_no_o_results = []
@@ -123,10 +126,16 @@ def train_model(
             loss.backward()
             train_loss += loss.item()
             optimizer.step()
-        # Evalaute model on dev at the end of each epoch.
+        # Evaluate model on dev at the end of each epoch.
         dev_loss, dev_acc, dev_acc_clean = test_model(
             model, dev_data, windows, task=task
         )
+
+        # Save best model
+        if dev_loss < best_loss:
+            best_loss = dev_loss
+            best_weights = model.state_dict()
+
         if task == "ner":
             print(
                 f"Epoch {j+1}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
@@ -139,6 +148,8 @@ def train_model(
         dev_loss_results.append(dev_loss)
         dev_acc_results.append(dev_acc)
         dev_acc_no_o_results.append(dev_acc_clean)
+    # load best weights
+    model.load_state_dict(best_weights)
     return dev_loss_results, dev_acc_results, dev_acc_no_o_results
 
 
@@ -197,7 +208,7 @@ def test_model(model, input_data, windows, task):
     )
 
 
-def run_inference(model, input_data, windows, task):
+def run_inference(model, input_data, windows, task, original_words):
     """
     This function tests a PyTorch model on given input data and returns the validation loss, overall accuracy, and
     accuracy excluding "O" labels. It takes in the following parameters:
@@ -212,29 +223,26 @@ def run_inference(model, input_data, windows, task):
     """
 
     BATCH_SIZE = 256
-    global idx_to_label
+    global idx_to_label, idx_to_word
 
-    loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+    loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
     predictions = []
     with torch.no_grad():
         model.eval()
         for k, data in enumerate(loader, 0):
-            x,y = data
+            x, y = data
             y_hat = model.forward(x)
+            x_tokens = [original_words[i] for i, _ in enumerate(x)]
             y_hat_labels = [idx_to_label[i.item()] for i in y_hat.argmax(dim=1)]
-            predictions.extend(y_hat_labels)
-
+            predictions.extend(zip(x_tokens, y_hat_labels))
 
     with open(f"test1.{task}", "w") as f:
-        for i in predictions:
-            f.write(i + "\n")
+        for pred in predictions:
+            f.write(f"{pred[0]} {pred[1]}" + "\n")
 
 
-def replace_rare(dataset):
+def replace_rare(dataset, threshold=1):
     from collections import Counter
-
-    # Define a threshold for word frequency
-    threshold = 2
 
     # Count the frequency of each word
     word_counts = Counter(dataset)
@@ -302,7 +310,8 @@ def read_data(
             tokens.append(token)
             labels.append(label)
     # Preprocess data
-    sentences = sentences[1:]  # remove docstart
+    if type != "test":
+        sentences = sentences[1:]  # remove docstart
     all_tokens = []
     all_labels = []
     for sentence in sentences:
@@ -319,10 +328,8 @@ def read_data(
         sentence[0].extend(tokens)
         sentence[1].clear()
         sentence[1].extend(labels)
-    # tokens = replace_rare(tokens)
-
-    # TODO where do we use all_tokens ?
-    all_tokens = replace_rare(all_tokens)
+    # TODO Best accuracy with this for threshold 2: ~0.835, without it 0.86+, when reducing to 1, ~0.868
+    # all_tokens = replace_rare(all_tokens)
     if not vocab:
         vocab = set(all_tokens)  # build a vocabulary of unique tokens
         vocab.add("<PAD>")  # add a padding token
@@ -344,19 +351,22 @@ def read_data(
     windows_dict = {}
     tokens_idx_all = []
     labels_idx_all = []
+    og_tokens = []
     for sentence in sentences:
         tokens, labels = sentence
+        og_tokens.extend(tokens)
         # map tokens to their index in the vocabulary
         tokens_idx = [
             word_to_idx[word] if word in word_to_idx else word_to_idx["<UNK>"]
             for word in tokens
         ]
         tokens_idx_all.extend(tokens_idx)
-        labels_idx = [
-            labels_to_idx[label] if label in labels_to_idx else labels_to_idx["O"]
-            for label in labels
-        ]
-        labels_idx_all.extend(labels_idx)
+        if type != "test":
+            labels_idx = [
+                labels_to_idx[label] if label in labels_to_idx else labels_to_idx["O"]
+                for label in labels
+            ]
+            labels_idx_all.extend(labels_idx)
 
         for i in range(len(tokens_idx)):
             start = max(0, i - window_size)
@@ -367,13 +377,19 @@ def read_data(
                 + tokens_idx[i:end]
                 + [word_to_idx["<PAD>"]] * (window_size - end + i + 1)
             )
-            label = labels_idx[i]
+            # label = labels_idx[i]
+            label = ""
             windows.append((context, label))
             # windows_dict[i] = (context, label)
     # TODO maybe we don't need to calculate it and return it ?
     tokens_idx = torch.tensor(tokens_idx_all)
-    labels_idx = torch.tensor(labels_idx_all)
-    return tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict
+    if type != "test":
+        labels_idx = torch.tensor(labels_idx_all)
+    else:
+        labels_idx = torch.tensor(
+            [0] * len(tokens_idx_all)
+        )  # fake labels for compatibility
+    return tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict, og_tokens
 
 
 def plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task):
@@ -397,9 +413,15 @@ def plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task):
 
 
 def main(task="ner"):
-    tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict = read_data(
-        f"./{task}/train", task=task
-    )
+    (
+        tokens_idx,
+        labels_idx,
+        windows,
+        vocab,
+        labels_vocab,
+        windows_dict,
+        og_tokens,
+    ) = read_data(f"./{task}/train", task=task)
     # create an empty embedding matrix, each vector is size 50
     embedding_matrix = nn.Embedding(len(vocab), 50, _freeze=False)
     embedding_matrix.weight.requires_grad = True
@@ -410,9 +432,9 @@ def main(task="ner"):
     model = Tagger(task, vocab, labels_vocab, embedding_matrix)
 
     # Make a new tensor out of the windows, so the tokens are windows of size window_size in the dataset
-    tokenx_idx_new = torch.tensor([window for window, label in windows])
+    token_idx_new = torch.tensor([window for window, label in windows])
 
-    dataset = TensorDataset(tokenx_idx_new, labels_idx)
+    dataset = TensorDataset(token_idx_new, labels_idx)
 
     # Load the dev data
     (
@@ -422,13 +444,20 @@ def main(task="ner"):
         vocab,
         labels_vocab,
         windows_dict,
+        og_tokens,
     ) = read_data(f"./{task}/dev", task=task, vocab=vocab, labels_vocab=labels_vocab)
 
-    tokenx_idx_dev_new = torch.tensor([window for window, label in windows_dev])
-    dev_dataset = TensorDataset(tokenx_idx_dev_new, labels_idx_dev)
+    token_idx_dev_new = torch.tensor([window for window, label in windows_dev])
+    dev_dataset = TensorDataset(token_idx_dev_new, labels_idx_dev)
     # Get the dev loss from the model training
     dev_loss, dev_accuracy, dev_accuracy_no_o = train_model(
-        model, input_data=dataset, dev_data=dev_dataset, epochs=10, windows=windows
+        model,
+        input_data=dataset,
+        dev_data=dev_dataset,
+        epochs=5,
+        windows=windows,
+        lr=0.005,
+        task=task,
     )
 
     # plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task)
@@ -441,19 +470,20 @@ def main(task="ner"):
         vocab_test,
         labels_vocab_test,
         windows_dict_test,
-    ) = read_data("./ner/test", type="test")
+        og_tokens,
+    ) = read_data(f"./{task}/test", type="test", vocab=vocab, labels_vocab=labels_vocab)
 
-    tokenx_idx_test_new = torch.tensor([window for window, label in windows_test])
-    test_dataset = TensorDataset(tokenx_idx_dev_new, labels_idx_dev)
+    token_idx_test_new = torch.tensor([window for window, label in windows_test])
+    test_dataset = TensorDataset(token_idx_test_new, labels_idx_test)
 
     # test_data
     # dev_loss, dev_acc, dev_acc_clean = test_model(
     #     model, test_dataset, windows, task="ner"
     # )
-    run_inference(model, test_dataset, windows, task)
+    run_inference(model, test_dataset, windows, task, og_tokens)
     # print(f"Test Loss: {dev_loss}, Test Acc: {dev_acc} Acc No O:{dev_acc_clean}")
     # tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
 
 
 if __name__ == "__main__":
-    main("ner")
+    main("pos")
