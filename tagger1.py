@@ -31,7 +31,7 @@ class Tagger(nn.Module):
         else:
             output_size = 36  # assumming https://www.ling.upenn.edu/courses/Fall_2003/ling001/penn_treebank_pos.html
 
-        output_size = len(labels_vocab)  # TODO check if it works for us
+        output_size = len(labels_vocab)
         hidden_size = 150
         window_size = 5
         input_size = (
@@ -96,7 +96,9 @@ def train_model(
     global idx_to_label
     BATCH_SIZE = 256
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)   # scheduler that every 3 epochs it updates the lr
+    sched = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=3, gamma=0.1
+    )  # scheduler that every 3 epochs it updates the lr
     dropout = nn.Dropout(p=0.5)
     dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows, task=task)
     print(
@@ -195,6 +197,39 @@ def test_model(model, input_data, windows, task):
     )
 
 
+def run_inference(model, input_data, windows, task):
+    """
+    This function tests a PyTorch model on given input data and returns the validation loss, overall accuracy, and
+    accuracy excluding "O" labels. It takes in the following parameters:
+
+    - model: a PyTorch model to be tested
+    - input_data: a dataset to test the model on
+    - windows: a parameter that is not used in the function
+
+    The function first initializes a batch size of 32 and a global variable idx_to_label. It then creates a DataLoader
+    object with the input_data and the batch size, and calculates the validation loss, overall accuracy, and accuracy
+    excluding "O" labels. These values are returned as a tuple.
+    """
+
+    BATCH_SIZE = 256
+    global idx_to_label
+
+    loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+    predictions = []
+    with torch.no_grad():
+        model.eval()
+        for k, data in enumerate(loader, 0):
+            x,y = data
+            y_hat = model.forward(x)
+            y_hat_labels = [idx_to_label[i.item()] for i in y_hat.argmax(dim=1)]
+            predictions.extend(y_hat_labels)
+
+
+    with open(f"test1.{task}", "w") as f:
+        for i in predictions:
+            f.write(i + "\n")
+
+
 def replace_rare(dataset):
     from collections import Counter
 
@@ -285,6 +320,9 @@ def read_data(
         sentence[1].clear()
         sentence[1].extend(labels)
     # tokens = replace_rare(tokens)
+
+    # TODO where do we use all_tokens ?
+    all_tokens = replace_rare(all_tokens)
     if not vocab:
         vocab = set(all_tokens)  # build a vocabulary of unique tokens
         vocab.add("<PAD>")  # add a padding token
@@ -292,14 +330,12 @@ def read_data(
     if not labels_vocab:
         labels_vocab = set(all_labels)
 
-    # TODO where do we use all_tokens ?
-    all_tokens = replace_rare(all_tokens)
-
     # Map words to their corresponding index in the vocabulary (word:idx)
     word_to_idx = {word: i for i, word in enumerate(vocab)}
     labels_to_idx = {word: i for i, word in enumerate(labels_vocab)}
 
-    idx_to_label = {i: label for label, i in labels_to_idx.items()}
+    if type != "test":
+        idx_to_label = {i: label for label, i in labels_to_idx.items()}
     idx_to_word = {i: word for word, i in word_to_idx.items()}
 
     # Create windows, each window will be of size window_size, padded with -1
@@ -340,6 +376,26 @@ def read_data(
     return tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict
 
 
+def plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task):
+    # # Plot the dev loss, and save
+    plt.plot(dev_loss, label="dev loss")
+    plt.title(f"{task} task")
+    plt.savefig(f"loss_{task}.png")
+    # plt.show()
+    #
+    # # Plot the dev accuracy, and save
+    plt.plot(dev_accuracy, label="dev accuracy")
+    plt.title(f"{task} task")
+    plt.savefig(f"accuracy_{task}.png")
+    # plt.show()
+    #
+    # # Plot the dev accuracy no O, and save
+    plt.plot(dev_accuracy_no_o, label="dev accuracy no o")
+    plt.title(f"{task} task")
+    plt.savefig(f"accuracy_no_O{task}.png")
+    # plt.show()
+
+
 def main(task="ner"):
     tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict = read_data(
         f"./{task}/train", task=task
@@ -375,38 +431,27 @@ def main(task="ner"):
         model, input_data=dataset, dev_data=dev_dataset, epochs=10, windows=windows
     )
 
+    # plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task)
 
-    # # Plot the dev loss, and save
-    # plt.plot(dev_loss, label="dev loss")
-    # plt.title(f"{task} task")
-    # plt.savefig(f"loss_{task}.png")
-    # plt.show()
-    #
-    # # Plot the dev accuracy, and save
-    # plt.plot(dev_accuracy, label="dev accuracy")
-    # plt.title(f"{task} task")
-    # plt.savefig(f"accuracy_{task}.png")
-    # plt.show()
-    #
-    # # Plot the dev accuracy no O, and save
-    # plt.plot(dev_accuracy_no_o, label="dev accuracy no o")
-    # plt.title(f"{task} task")
-    # plt.savefig(f"accuracy_no_O{task}.png")
-    # plt.show()
-
-    print()
     print("Test")
+    (
+        tokens_idx_test,
+        labels_idx_test,
+        windows_test,
+        vocab_test,
+        labels_vocab_test,
+        windows_dict_test,
+    ) = read_data("./ner/test", type="test")
+
+    tokenx_idx_test_new = torch.tensor([window for window, label in windows_test])
+    test_dataset = TensorDataset(tokenx_idx_dev_new, labels_idx_dev)
 
     # test_data
-    dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_dataset, windows, task="ner")
-
-    print(
-        f"Test Loss: {dev_loss}, Test Acc: {dev_acc} Acc No O:{dev_acc_clean}"
-    )
-    tokens_idx_test, labels_idx_test, windows_test, vocab_test, labels_vocab_test, windows_dict_test = read_data(
-        "./ner/test", type="test"
-    )
-
+    # dev_loss, dev_acc, dev_acc_clean = test_model(
+    #     model, test_dataset, windows, task="ner"
+    # )
+    run_inference(model, test_dataset, windows, task)
+    # print(f"Test Loss: {dev_loss}, Test Acc: {dev_acc} Acc No O:{dev_acc_clean}")
     # tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
 
 
