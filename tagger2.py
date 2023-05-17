@@ -106,7 +106,7 @@ def train_model(
     """
 
     global idx_to_label
-    BATCH_SIZE = 32
+    BATCH_SIZE = 256
     # optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
@@ -264,7 +264,7 @@ def read_data(
                 token = line.strip()
                 label = ""
             if any(char.isdigit() for char in token) and label == "O":
-                token = "$NUM"
+                token = "NNNUMMM"
             tokens.append(token)
             labels.append(label)
     # Preprocess data
@@ -274,8 +274,8 @@ def read_data(
     for sentence in sentences:
         tokens, labels = sentence
         for i in range(len(tokens)):
-            tokens[i] = tokens[i].strip()
-            labels[i] = labels[i].strip()
+            tokens[i] = tokens[i].strip().lower()
+            labels[i] = labels[i].strip().lower()
 
         all_tokens.extend(tokens)
         all_labels.extend(labels)
@@ -289,7 +289,7 @@ def read_data(
     if not vocab:
         vocab = set(all_tokens)  # build a vocabulary of unique tokens
     vocab.add("<PAD>")  # add a padding token
-    vocab.add("<UNK>")  # add an unknown token
+    vocab.add("UUUNKKK")  # add an unknown token
     if not labels_vocab:
         labels_vocab = set(all_labels)
 
@@ -310,7 +310,7 @@ def read_data(
         tokens, labels = sentence
         # map tokens to their index in the vocabulary
         tokens_idx = [
-            word_to_idx[word] if word in word_to_idx else word_to_idx["<UNK>"]
+            word_to_idx[word] if word in word_to_idx else word_to_idx["UUUNKKK"]
             for word in tokens
         ]
         tokens_idx_all.extend(tokens_idx)
@@ -352,7 +352,7 @@ def main(task="ner"):
     _, vecs = load_embedding_matrix(f"./wordVectors.txt")
 
     tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict = read_data(
-        f"./{task}/train", task=task
+        f"./{task}/train", task=task, vocab=_
     )
     # create an empty embedding matrix, each vector is size 50
     # embedding_matrix = nn.Embedding(len(vocab), 50, _freeze=False)
@@ -407,4 +407,4 @@ def main(task="ner"):
 
 
 if __name__ == "__main__":
-    main("ner")
+    main("pos")
