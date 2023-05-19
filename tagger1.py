@@ -232,7 +232,7 @@ def run_inference(model, input_data, windows, task, original_words):
         for k, data in enumerate(loader, 0):
             x, y = data
             y_hat = model.forward(x)
-            x_tokens = [original_words[i] for i, _ in enumerate(x)]
+            x_tokens = [original_words[i+BATCH_SIZE*k] for i, _ in enumerate(x)]
             y_hat_labels = [idx_to_label[i.item()] for i in y_hat.argmax(dim=1)]
             predictions.extend(zip(x_tokens, y_hat_labels))
 
@@ -252,7 +252,7 @@ def replace_rare(dataset, threshold=1):
 
     # Print the rare words
     # print(rare_words)
-    updated = [word if word not in rare_words else "<UNK>" for word in dataset]
+    updated = [word if word not in rare_words else "UUUNKKK" for word in dataset]
     return updated
 
 
@@ -306,7 +306,7 @@ def read_data(
                 token = line.strip()
                 label = ""
             if any(char.isdigit() for char in token) and label == "O":
-                token = "$NUM"
+                token = "NNNUMMM"
             tokens.append(token)
             labels.append(label)
     # Preprocess data
@@ -333,7 +333,7 @@ def read_data(
     if not vocab:
         vocab = set(all_tokens)  # build a vocabulary of unique tokens
         vocab.add("<PAD>")  # add a padding token
-        vocab.add("<UNK>")  # add an unknown token
+        vocab.add("UUUNKKK")  # add an unknown token
     if not labels_vocab:
         labels_vocab = set(all_labels)
 
@@ -357,7 +357,7 @@ def read_data(
         og_tokens.extend(tokens)
         # map tokens to their index in the vocabulary
         tokens_idx = [
-            word_to_idx[word] if word in word_to_idx else word_to_idx["<UNK>"]
+            word_to_idx[word] if word in word_to_idx else word_to_idx["UUUNKKK"]
             for word in tokens
         ]
         tokens_idx_all.extend(tokens_idx)
@@ -454,7 +454,7 @@ def main(task="ner"):
         model,
         input_data=dataset,
         dev_data=dev_dataset,
-        epochs=5,
+        epochs=1,
         windows=windows,
         lr=0.005,
         task=task,
