@@ -351,6 +351,7 @@ def load_embedding_matrix(embedding_path):
 def main(task="ner"):
     _, vecs = load_embedding_matrix(f"./wordVectors.txt")
 
+    # TODO: add a new embedding for the words in the test set that are not in the training set, and initialize it randomly
     tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict = read_data(
         f"./{task}/train", task=task, vocab=_
     )
