@@ -210,7 +210,7 @@ def replace_rare(dataset):
 
     # Print the rare words
     # print(rare_words)
-    updated = [word if word not in rare_words else "<UNK>" for word in dataset]
+    updated = [word if word not in rare_words else "UUUNKKK" for word in dataset]
     return updated
 
 

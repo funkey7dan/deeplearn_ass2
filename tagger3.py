@@ -225,7 +225,7 @@ def replace_rare(dataset):
 
     # Print the rare words
     # print(rare_words)
-    updated = [word if word not in rare_words else "<UNK>" for word in dataset]
+    updated = [word if word not in rare_words else "UUUNKKK" for word in dataset]
     return updated
 
 
@@ -279,7 +279,7 @@ def read_data(
                 token = line.strip()
                 label = ""
             if any(char.isdigit() for char in token) and label == "O":
-                token = "$NUM"
+                token = "NNNUMMM"
             tokens.append(token)
             labels.append(label)
     # Preprocess data
@@ -301,12 +301,12 @@ def read_data(
         sentence[1].clear()
         sentence[1].extend(labels)
     # tokens = replace_rare(tokens)
-    all_tokens.extend(["<PAD>", "<UNK>"])
+    all_tokens.extend(["<PAD>", "UUUNKKK"])
     if not vocab:
-        # all_tokens.extend(["<PAD>","<UNK>"])
+        # all_tokens.extend(["<PAD>","UUUNKKK"])
         vocab = set(all_tokens)  # build a vocabulary of unique tokens
     # vocab.add("<PAD>")  # add a padding token
-    # vocab.add("<UNK>")  # add an unknown token
+    # vocab.add("UUUNKKK")  # add an unknown token
     if not labels_vocab:
         labels_vocab = set(all_labels)
 
@@ -344,19 +344,19 @@ def read_data(
 
         # map tokens to their index in the vocabulary
         tokens_idx = [
-            word_to_idx[word] if word in word_to_idx else word_to_idx["<UNK>"]
+            word_to_idx[word] if word in word_to_idx else word_to_idx["UUUNKKK"]
             for word in tokens
         ]
         prefix_idx = [
             prefix_to_idx[word[:3]]
             if word[:3] in prefix_to_idx
-            else prefix_to_idx["<UNK>"]
+            else prefix_to_idx["UUUNKKK"]
             for word in tokens
         ]
         suffix_idx = [
             suffixes_to_idx[word[-3:]]
             if word[-3:] in suffixes_to_idx
-            else suffixes_to_idx["<UNK>"]
+            else suffixes_to_idx["UUUNKKK"]
             for word in tokens
         ]
         prefix_idx_all.extend(prefix_idx)
