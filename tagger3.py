@@ -469,10 +469,10 @@ def main(task="ner"):
     )
 
     # Make a new tensor out of the windows, so the tokens are windows of size window_size in the dataset
-    tokenx_idx_new = torch.tensor([window for window, label in windows])
+    tokens_idx_new = torch.tensor([window for window, label in windows])
 
     dataset = TensorDataset(
-        tokenx_idx_new,
+        tokens_idx_new,
         torch.tensor(prefix_windows),
         torch.tensor(suffix_windows),
         labels_idx,
@@ -492,9 +492,9 @@ def main(task="ner"):
         suffixes_vocab,
     ) = read_data(f"./{task}/dev", task=task, vocab=vocab, labels_vocab=labels_vocab)
 
-    tokenx_idx_dev_new = torch.tensor([window for window, label in windows_dev])
+    tokens_idx_dev_new = torch.tensor([window for window, label in windows_dev])
     dev_dataset = TensorDataset(
-        tokenx_idx_dev_new,
+        tokens_idx_dev_new,
         torch.tensor(prefix_windows),
         torch.tensor(suffix_windows),
         labels_idx_dev,

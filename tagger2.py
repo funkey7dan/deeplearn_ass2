@@ -368,9 +368,9 @@ def main(task="ner"):
     model = Tagger(task, vocab, labels_vocab, embedding_matrix)
 
     # Make a new tensor out of the windows, so the tokens are windows of size window_size in the dataset
-    tokenx_idx_new = torch.tensor([window for window, label in windows])
+    tokens_idx_new = torch.tensor([window for window, label in windows])
 
-    dataset = TensorDataset(tokenx_idx_new, labels_idx)
+    dataset = TensorDataset(tokens_idx_new, labels_idx)
 
     # Load the dev data
     (
@@ -382,8 +382,8 @@ def main(task="ner"):
         windows_dict,
     ) = read_data(f"./{task}/dev", task=task, vocab=vocab, labels_vocab=labels_vocab)
 
-    tokenx_idx_dev_new = torch.tensor([window for window, label in windows_dev])
-    dev_dataset = TensorDataset(tokenx_idx_dev_new, labels_idx_dev)
+    tokens_idx_dev_new = torch.tensor([window for window, label in windows_dev])
+    dev_dataset = TensorDataset(tokens_idx_dev_new, labels_idx_dev)
     # Get the dev loss from the model training
     results = train_model(
         model, input_data=dataset, dev_data=dev_dataset, epochs=10, windows=windows
