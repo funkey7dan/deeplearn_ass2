@@ -5,6 +5,8 @@ import numpy as np
 import os
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
+import string
+import math
 
 
 idx_to_label = {}
@@ -34,9 +36,10 @@ class Tagger(nn.Module):
         vocab,
         labels_vocab,
         embedding_matrix,
-        embedding_matrix_prefixes,
-        embedding_matrix_suffixes,
+        char_embedding,
+        char_to_idx,
         window_size=5,
+        max_word_len=20,
     ):
         """
         Initializes a Tagger object.
@@ -55,7 +58,7 @@ class Tagger(nn.Module):
         if task == "ner":
             output_size = 5
         else:
-            output_size = 36  # assumming https://www.ling.upenn.edu/courses/Fall_2003/ling001/penn_treebank_pos.html
+            output_size = 36  # assuming https://www.ling.upenn.edu/courses/Fall_2003/ling001/penn_treebank_pos.html
 
         output_size = len(labels_vocab)  # TODO check if it works for us
         hidden_size = 150
@@ -67,11 +70,20 @@ class Tagger(nn.Module):
         self.out_linear = nn.Linear(hidden_size, output_size)
         # self.softmax = nn.Softmax()
         self.embedding_matrix = embedding_matrix
-        self.embedding_matrix_prefixes = embedding_matrix_prefixes
-        self.embedding_matrix_suffixes = embedding_matrix_suffixes
         self.activate = nn.Tanh()
 
-    def forward(self, x, pref, suf):
+        # WordCNN parameters
+        self.char_to_idx = char_to_idx
+        self.char_embedding = char_embedding
+        self.word_cnn = WordCNN(
+            char_embedding,
+            num_filters=30,
+            window_size=3,
+            max_word_len=max_word_len,
+            char_to_idx=char_to_idx,
+        )
+
+    def forward(self, x):
         """
         Forward pass of the tagger.
         Expects x of shape (batch_size, window total size), which means 32 windows for example.
@@ -89,17 +101,81 @@ class Tagger(nn.Module):
         # x = torch.cat(
         #     [self.embedding_matrix(x[:, i]) for i in range(x.shape[1])], dim=1
         # )
+        # x = self.embedding_matrix(x).view(
+        #     -1, 250
+        # )  # Faster than the above and equivalent
 
-        x = self.embedding_matrix(x).view(
-            -1, 250
-        )  # Faster than the above and equivalent
-        prefixes = self.embedding_matrix_prefixes(pref).view(-1, 250)
-        suffixes = self.embedding_matrix_suffixes(suf).view(-1, 250)
-        x = x + prefixes + suffixes
+        # Pass the batch to the word embedding layer to get the word embeddings for each word in the batch
+        # TODO: check if it works as intended
+        word_char_embeddings = self.word_cnn.forward(x)
+        # cnn output shape: (batch_size, conv_input_dim * num_filters, max_word_len)
+        x = self.embedding_matrix(x).view(-1, 50)
+        x = torch.cat([x, word_char_embeddings], dim=1)
         x = self.in_linear(x)
         x = self.activate(x)
         x = self.out_linear(x)
         # x = self.softmax(x) #TODO: we are using cross-entropy loss therefore we maybe don't need softmax
+        return x
+
+
+class WordCNN(nn.Module):
+    def __init__(
+        self, char_embedding, num_filters, window_size, max_word_len, char_to_idx
+    ):
+        super(WordCNN, self).__init__()
+        # Get the matrix of char embeddings
+        self.char_embedding = char_embedding
+        self.char_embedding_dim = char_embedding.embedding_dim
+        self.max_word_len = max_word_len
+
+        # The input is the size of each char embedding
+        conv_input_dim = self.char_embedding_dim
+        conv_output_dim = conv_input_dim * num_filters
+        self.conv1d = nn.Conv1d(
+            in_channels=conv_input_dim,
+            out_channels=conv_output_dim,
+            kernel_size=window_size,
+        )
+        # TODO: check that the output size is correct
+        self.max_pool = nn.AdaptiveMaxPool1d(output_size=50)
+        self.char_to_idx = char_to_idx
+
+    def forward(self, sequence):
+        # global idx_to_word
+        batch_size = sequence.shape[0]
+        # We get a batch of words, each word is a sequence of chars,
+        # we need to get the char embeddings for each char in each word
+
+        # Build a matrix of char embeddings for each word in the batch:
+        # TODO: make it more efficient with batching
+        word_matrices = []
+        padding_tensor = self.char_embedding(torch.tensor(self.char_to_idx["pad"]))
+
+        for i in range(batch_size):
+            word = sequence[i].item()
+            word = idx_to_word[word]
+            padding_front = math.floor((self.max_word_len - len(word)) / 2)
+            padding_back = self.max_word_len - len(word) - padding_front
+            if padding_back + padding_front + len(word) != self.max_word_len:
+                raise ("ERROR: padding is wrong")
+            # TODO: change zeros to "padding" char embedding
+            # Repeat the padding tensor {padding} times
+            padding_front_tensor = padding_tensor.repeat(padding_front, 1)
+            padding_back_tensor = padding_tensor.repeat(padding_back, 1)
+            word = [self.char_to_idx[char] for char in word]
+            word = [self.char_embedding(torch.tensor(char)) for char in word]
+            word = torch.stack(word)
+            word_matrix = torch.cat(
+                (padding_front_tensor, word, padding_back_tensor), dim=0
+            )
+            word_matrices.append(word_matrix)
+        # x = torch.flatten(input=torch.stack(word_matrices), start_dim=1)
+        x = torch.stack(word_matrices)
+
+        # conv1d expects the input to be of shape (batch_size, channels, seq_len)
+        x = x.permute(0, 2, 1)
+        x = self.conv1d(x)
+        x = self.max_pool(x)
         return x
 
 
@@ -122,7 +198,6 @@ def train_model(
 
     global idx_to_label
     BATCH_SIZE = 32
-    # optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
     dropout = nn.Dropout(p=0.5)
@@ -137,15 +212,15 @@ def train_model(
         train_loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True)
         train_loss = 0
         for i, data in enumerate(train_loader, 0):
-            x, pref, suf, y = data
+            x, y = data
             optimizer.zero_grad(set_to_none=True)
-            y_hat = model.forward(x, pref, suf)
+            y_hat = model.forward(x)
             y_hat = dropout(y_hat)
             loss = F.cross_entropy(y_hat, y)
             loss.backward()
             train_loss += loss.item()
             optimizer.step()
-        # Evalaute model on dev at the end of each epoch.
+        # Evaluate model on dev at the end of each epoch.
         dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows)
         print(
             f"Epoch {j}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
@@ -180,8 +255,8 @@ def test_model(model, input_data, windows):
         count_no_o = 0
         to_remove = 0
         for k, data in enumerate(loader, 0):
-            x, pref, suf, y = data
-            y_hat = model.forward(x, pref, suf)
+            x, y = data
+            y_hat = model.forward(x)
             # y_hat = dropout(y_hat)
             val_loss = F.cross_entropy(y_hat, y)
             # Create a list of predicted labels and actual labels
@@ -225,7 +300,7 @@ def replace_rare(dataset):
 
     # Print the rare words
     # print(rare_words)
-    updated = [word if word not in rare_words else "<UNK>" for word in dataset]
+    updated = [word if word not in rare_words else "UUUNKKK" for word in dataset]
     return updated
 
 
@@ -279,7 +354,7 @@ def read_data(
                 token = line.strip()
                 label = ""
             if any(char.isdigit() for char in token) and label == "O":
-                token = "$NUM"
+                token = "NNNUMMM"
             tokens.append(token)
             labels.append(label)
     # Preprocess data
@@ -289,7 +364,7 @@ def read_data(
     for sentence in sentences:
         tokens, labels = sentence
         for i in range(len(tokens)):
-            tokens[i] = tokens[i].strip()
+            tokens[i] = tokens[i].strip().lower()
             labels[i] = labels[i].strip()
 
         all_tokens.extend(tokens)
@@ -301,19 +376,26 @@ def read_data(
         sentence[1].clear()
         sentence[1].extend(labels)
     # tokens = replace_rare(tokens)
-    all_tokens.extend(["<PAD>", "<UNK>"])
+    all_tokens.extend(["<PAD>", "UUUNKKK"])
     if not vocab:
-        # all_tokens.extend(["<PAD>","<UNK>"])
+        # all_tokens.extend(["<PAD>","UUUNKKK"])
         vocab = set(all_tokens)  # build a vocabulary of unique tokens
     # vocab.add("<PAD>")  # add a padding token
-    # vocab.add("<UNK>")  # add an unknown token
+    # vocab.add("UUUNKKK")  # add an unknown token
     if not labels_vocab:
         labels_vocab = set(all_labels)
 
-    prefixes_vocab = set([word[:3] for word in all_tokens])
-    suffixes_vocab = set([word[-3:] for word in all_tokens])
-    prefix_to_idx = {word: i for i, word in enumerate(prefixes_vocab)}
-    suffixes_to_idx = {word: i for i, word in enumerate(suffixes_vocab)}
+    # prefixes_vocab = set([word[:3] for word in all_tokens])
+    # suffixes_vocab = set([word[-3:] for word in all_tokens])
+    # prefix_to_idx = {word: i for i, word in enumerate(prefixes_vocab)}
+    # suffixes_to_idx = {word: i for i, word in enumerate(suffixes_vocab)}
+
+    # Create a vocabulary of unique characters for character embeddings
+    char_set = string.ascii_lowercase + string.digits + string.punctuation + " "
+    char_vocab = set([char for char in char_set])
+    char_vocab = char_vocab.union(set([char for word in all_tokens for char in word]))
+    char_vocab.add("pad")
+    char_to_idx = {char: i for i, char in enumerate(char_vocab)}
 
     # Map words to their corresponding index in the vocabulary (word:idx)
     word_to_idx = {word: i for i, word in enumerate(vocab)}
@@ -322,6 +404,7 @@ def read_data(
 
     idx_to_label = {i: label for label, i in labels_to_idx.items()}
     idx_to_word = {i: word for word, i in word_to_idx.items()}
+    idx_to_char = {i: char for char, i in char_to_idx.items()}
 
     # Create windows, each window will be of size window_size, padded with -1
     # for token of index i, w_i the window is: ([w_i-2,w_i-1 i, w_i+1,w_i+2],label of w_i)
@@ -331,36 +414,24 @@ def read_data(
     # corpus). Then, you can represent each word as a sum of the word vector, the
     # prefix vector and the suffix vector.
     windows = []
-    prefix_windows = []
-    suffix_windows = []
+
     windows_dict = {}
     tokens_idx_all = []
     labels_idx_all = []
-    prefix_idx_all = []
-    suffix_idx_all = []
+    char_idx_all = {}
+    max_len = 0
 
     for sentence in sentences:
         tokens, labels = sentence
 
         # map tokens to their index in the vocabulary
         tokens_idx = [
-            word_to_idx[word] if word in word_to_idx else word_to_idx["<UNK>"]
+            word_to_idx[word] if word in word_to_idx else word_to_idx["UUUNKKK"]
             for word in tokens
         ]
-        prefix_idx = [
-            prefix_to_idx[word[:3]]
-            if word[:3] in prefix_to_idx
-            else prefix_to_idx["<UNK>"]
-            for word in tokens
-        ]
-        suffix_idx = [
-            suffixes_to_idx[word[-3:]]
-            if word[-3:] in suffixes_to_idx
-            else suffixes_to_idx["<UNK>"]
-            for word in tokens
-        ]
-        prefix_idx_all.extend(prefix_idx)
-        suffix_idx_all.extend(suffix_idx)
+
+        # find the maximum length of a token in the data
+        max_len = max(max_len, max(len(word) for word in tokens))
         tokens_idx_all.extend(tokens_idx)
 
         labels_idx = [
@@ -378,28 +449,11 @@ def read_data(
                 + tokens_idx[i:end]
                 + [word_to_idx["<PAD>"]] * (window_size - end + i + 1)
             )
-            prefix_context = (
-                [prefix_to_idx["<PA"]] * (window_size - i + start)
-                + prefix_idx[start:i]
-                + prefix_idx[i:end]
-                + [prefix_to_idx["<PA"]] * (window_size - end + i + 1)
-            )
-            suffix_context = (
-                [suffixes_to_idx["AD>"]] * (window_size - i + start)
-                + suffix_idx[start:i]
-                + suffix_idx[i:end]
-                + [suffixes_to_idx["AD>"]] * (window_size - end + i + 1)
-            )
             label = labels_idx[i]
             windows.append((context, label))
-            prefix_windows.append(prefix_context)
-            suffix_windows.append(suffix_context)
-            # windows_dict[i] = (context, label)
 
     tokens_idx = torch.tensor(tokens_idx_all)
     labels_idx = torch.tensor(labels_idx_all)
-    suffix_idx = torch.tensor(suffix_idx_all)
-    prefix_idx = torch.tensor(prefix_idx_all)
 
     return (
         tokens_idx,
@@ -408,10 +462,9 @@ def read_data(
         vocab,
         labels_vocab,
         windows_dict,
-        prefix_windows,
-        suffix_windows,
-        prefixes_vocab,
-        suffixes_vocab,
+        char_vocab,
+        char_to_idx,
+        max_len,
     )
 
 
@@ -435,17 +488,17 @@ def main(task="ner"):
         vocab,
         labels_vocab,
         windows_dict,
-        prefix_windows,
-        suffix_windows,
-        prefixes_vocab,
-        suffixes_vocab,
+        char_vocab,
+        char_to_idx,
+        max_len,
     ) = read_data(f"./{task}/train", task=task)
     # Create embedding matrices for the prefixes and suffixes
 
-    embedding_matrix_prefixes = nn.Embedding(len(prefixes_vocab), 50)
-    nn.init.xavier_uniform_(embedding_matrix_prefixes.weight)
-    embedding_matrix_suffixes = nn.Embedding(len(suffixes_vocab), 50)
-    nn.init.xavier_uniform_(embedding_matrix_suffixes.weight)
+    dataset = TensorDataset(tokens_idx, labels_idx)
+
+    # Initialize the character embedding matrix, each vector is size 30
+    chars_embedding = nn.Embedding(len(char_vocab), 30)
+    nn.init.uniform_(chars_embedding.weight, -math.sqrt(3 / 30), math.sqrt(3 / 30))
 
     # create an empty embedding matrix, each vector is size 50
     embedding_matrix = nn.Embedding(len(vocab), 50, _freeze=False)
@@ -463,19 +516,10 @@ def main(task="ner"):
         vocab,
         labels_vocab,
         embedding_matrix,
-        embedding_matrix_prefixes,
-        embedding_matrix_suffixes,
+        char_embedding=chars_embedding,
         window_size=1,
-    )
-
-    # Make a new tensor out of the windows, so the tokens are windows of size window_size in the dataset
-    tokens_idx_new = torch.tensor([window for window, label in windows])
-
-    dataset = TensorDataset(
-        tokens_idx_new,
-        torch.tensor(prefix_windows),
-        torch.tensor(suffix_windows),
-        labels_idx,
+        max_word_len=max_len,
+        char_to_idx=char_to_idx,
     )
 
     # Load the dev data
@@ -486,39 +530,20 @@ def main(task="ner"):
         vocab,
         labels_vocab,
         windows_dict,
-        prefix_windows,
-        suffix_windows,
-        prefixes_vocab,
-        suffixes_vocab,
+        char_vocab,
+        char_to_idx,
+        max_len,
     ) = read_data(f"./{task}/dev", task=task, vocab=vocab, labels_vocab=labels_vocab)
 
-    tokens_idx_dev_new = torch.tensor([window for window, label in windows_dev])
-    dev_dataset = TensorDataset(
-        tokens_idx_dev_new,
-        torch.tensor(prefix_windows),
-        torch.tensor(suffix_windows),
-        labels_idx_dev,
-    )
+    dev_dataset = TensorDataset(tokens_idx_dev, labels_idx_dev)
     # Get the dev loss from the model training
     results = train_model(
-        model, input_data=dataset, dev_data=dev_dataset, epochs=10, windows=windows
+        model, input_data=dataset, dev_data=dev_dataset, epochs=1, windows=windows
     )
     # Plot the dev loss, and save
     p = plt.plot(results, label="dev loss")
     plt.title(f"{task} task")
     plt.savefig(f"loss_{task}.png")
-
-    # test_data
-    # dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows)
-
-    # print(
-    #     f"Test Loss: {dev_loss}, Test Acc: {dev_acc} Acc No O:{dev_acc_clean}"
-    # )
-    # tokens_idx_test, labels_idx_test, windows_test, vocab_test, labels_vocab_test, windows_dict_test = read_data(
-    #     "./ner/test",type="test"
-    # )
-
-    # tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
 
 
 if __name__ == "__main__":
