@@ -11,25 +11,10 @@ import math
 
 idx_to_label = {}
 idx_to_word = {}
+word_chars_cache = {}
 
 
 class Tagger(nn.Module):
-    # TODO clean this description
-    """
-    A sequence tagger,where
-    the input is a sequence of items(in our case, a sentence of natural-language words),
-    and an output is a label for each of the item.
-    The tagger will be greedy/local and window-based. For a sequence of words
-    w1,...,wn, the tag of word wi will be based on the words in a window of
-    two words to each side of the word being tagged: wi-2,wi-1,wi,wi+1,wi+2.
-    'Greedy/local' here means that the tag assignment for word i will not depend on the tags of other words
-    each word in the window will be assigned a 50 dimensional embedding vector, using an embedding matrix E.
-    MLP with one hidden layer and tanh activation function.
-    The output of the MLP will be passed through a softmax transformation, resulting in a probability distribution.
-    The network will be trained with a cross-entropy loss.
-    The vocabulary of E will be based on the words in the training set (you are not allowed to add to E words that appear only in the dev set).
-    """
-
     def __init__(
         self,
         task,
@@ -63,9 +48,10 @@ class Tagger(nn.Module):
         output_size = len(labels_vocab)  # TODO check if it works for us
         hidden_size = 150
         window_size = 5
-        input_size = (
-            embedding_matrix.embedding_dim * window_size
-        )  # 5 concat. 50 dimensional embedding vectors, output over labels
+        # input_size = (
+        #     embedding_matrix.embedding_dim * window_size
+        # )  # 5 concat. 50 dimensional embedding vectors, output over labels
+        input_size = char_embedding.embedding_dim + embedding_matrix.embedding_dim
         self.in_linear = nn.Linear(input_size, hidden_size)
         self.out_linear = nn.Linear(hidden_size, output_size)
         # self.softmax = nn.Softmax()
@@ -83,7 +69,7 @@ class Tagger(nn.Module):
             char_to_idx=char_to_idx,
         )
 
-    def forward(self, x):
+    def forward(self, x, word_char_embeddings):
         """
         Forward pass of the tagger.
         Expects x of shape (batch_size, window total size), which means 32 windows for example.
@@ -94,27 +80,16 @@ class Tagger(nn.Module):
         Returns:
             A tensor of shape (batch_size, output_dim).
         """
-        # Concatenate the word embedding vectors of the words in the window to create a single vector for the window.
-        # x.shape[1] is the size of window, which is 5 in our case.
-        # self.embedding_matrix(x[:,i]) is the 32 x 50 embedding matrix of the i'th items in the window.
-        # torch.cat concatenates the 5 32 x 50 embedding matrix of the i'th items in the window to a 32 x 250 matrix, which we can pass to the linear layer.
-        # x = torch.cat(
-        #     [self.embedding_matrix(x[:, i]) for i in range(x.shape[1])], dim=1
-        # )
-        # x = self.embedding_matrix(x).view(
-        #     -1, 250
-        # )  # Faster than the above and equivalent
-
         # Pass the batch to the word embedding layer to get the word embeddings for each word in the batch
         # TODO: check if it works as intended
-        word_char_embeddings = self.word_cnn.forward(x)
+        # word_char_embeddings = self.word_cnn.forward(x)
         # cnn output shape: (batch_size, conv_input_dim * num_filters, max_word_len)
         x = self.embedding_matrix(x).view(-1, 50)
+
         x = torch.cat([x, word_char_embeddings], dim=1)
         x = self.in_linear(x)
         x = self.activate(x)
         x = self.out_linear(x)
-        # x = self.softmax(x) #TODO: we are using cross-entropy loss therefore we maybe don't need softmax
         return x
 
 
@@ -132,16 +107,16 @@ class WordCNN(nn.Module):
         conv_input_dim = self.char_embedding_dim
         conv_output_dim = conv_input_dim * num_filters
         self.conv1d = nn.Conv1d(
-            in_channels=conv_input_dim,
-            out_channels=conv_output_dim,
-            kernel_size=window_size,
+            conv_input_dim,
+            num_filters,
+            window_size,
         )
         # TODO: check that the output size is correct
-        self.max_pool = nn.AdaptiveMaxPool1d(output_size=50)
+        self.max_pool = nn.MaxPool1d(kernel_size=max_word_len - window_size + 1)
         self.char_to_idx = char_to_idx
 
     def forward(self, sequence):
-        # global idx_to_word
+        global word_chars_cache
         batch_size = sequence.shape[0]
         # We get a batch of words, each word is a sequence of chars,
         # we need to get the char embeddings for each char in each word
@@ -156,27 +131,30 @@ class WordCNN(nn.Module):
             word = idx_to_word[word]
             padding_front = math.floor((self.max_word_len - len(word)) / 2)
             padding_back = self.max_word_len - len(word) - padding_front
-            if padding_back + padding_front + len(word) != self.max_word_len:
-                raise ("ERROR: padding is wrong")
-            # TODO: change zeros to "padding" char embedding
             # Repeat the padding tensor {padding} times
-            padding_front_tensor = padding_tensor.repeat(padding_front, 1)
-            padding_back_tensor = padding_tensor.repeat(padding_back, 1)
-            word = [self.char_to_idx[char] for char in word]
+            #padding_front_tensor = padding_tensor.repeat(padding_front, 1)
+            #padding_back_tensor = padding_tensor.repeat(padding_back, 1)
+
+            if not word in word_chars_cache:
+                word_chars_cache[word] = [self.char_to_idx[char] for char in word]
+            word = word_chars_cache[word]
             word = [self.char_embedding(torch.tensor(char)) for char in word]
             word = torch.stack(word)
-            word_matrix = torch.cat(
-                (padding_front_tensor, word, padding_back_tensor), dim=0
-            )
+
+            word_matrix = nn.functional.pad(word, (0, 0, padding_front, padding_back))
+            # word_matrix = torch.cat(
+            #     (padding_front_tensor, word, padding_back_tensor), dim=0
+            # )
             word_matrices.append(word_matrix)
         # x = torch.flatten(input=torch.stack(word_matrices), start_dim=1)
         x = torch.stack(word_matrices)
 
         # conv1d expects the input to be of shape (batch_size, channels, seq_len)
+        # so we get a tensor of shape (batch_size, seq_len, channels) and then permute it
         x = x.permute(0, 2, 1)
         x = self.conv1d(x)
         x = self.max_pool(x)
-        return x
+        return x.squeeze()
 
 
 def train_model(
@@ -197,7 +175,7 @@ def train_model(
     """
 
     global idx_to_label
-    BATCH_SIZE = 32
+    BATCH_SIZE = 256
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
     dropout = nn.Dropout(p=0.5)
@@ -214,7 +192,8 @@ def train_model(
         for i, data in enumerate(train_loader, 0):
             x, y = data
             optimizer.zero_grad(set_to_none=True)
-            y_hat = model.forward(x)
+            word_char_embeddings = model.word_cnn.forward(x)
+            y_hat = model.forward(x, word_char_embeddings)
             y_hat = dropout(y_hat)
             loss = F.cross_entropy(y_hat, y)
             loss.backward()
@@ -223,7 +202,7 @@ def train_model(
         # Evaluate model on dev at the end of each epoch.
         dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows)
         print(
-            f"Epoch {j}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
+            f"Epoch {j+1}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
         )
         sched.step()
         results.append(dev_loss)
@@ -244,7 +223,7 @@ def test_model(model, input_data, windows):
     excluding "O" labels. These values are returned as a tuple.
     """
 
-    BATCH_SIZE = 32
+    BATCH_SIZE = 256
     global idx_to_label
 
     loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True)
@@ -256,7 +235,7 @@ def test_model(model, input_data, windows):
         to_remove = 0
         for k, data in enumerate(loader, 0):
             x, y = data
-            y_hat = model.forward(x)
+            y_hat = model.forward(x, model.word_cnn.forward(x))
             # y_hat = dropout(y_hat)
             val_loss = F.cross_entropy(y_hat, y)
             # Create a list of predicted labels and actual labels
@@ -408,11 +387,7 @@ def read_data(
 
     # Create windows, each window will be of size window_size, padded with -1
     # for token of index i, w_i the window is: ([w_i-2,w_i-1 i, w_i+1,w_i+2],label of w_i)
-    # TODO: add prefix and suffix in this manner:
-    # assign an embedding vector to each prefix of 3 letters and each
-    # suffix of 3 letters (among the prefixes and suffixes that were observed in the
-    # corpus). Then, you can represent each word as a sum of the word vector, the
-    # prefix vector and the suffix vector.
+
     windows = []
 
     windows_dict = {}
@@ -493,23 +468,23 @@ def main(task="ner"):
         max_len,
     ) = read_data(f"./{task}/train", task=task)
     # Create embedding matrices for the prefixes and suffixes
-
+    
     dataset = TensorDataset(tokens_idx, labels_idx)
 
     # Initialize the character embedding matrix, each vector is size 30
-    chars_embedding = nn.Embedding(len(char_vocab), 30)
+    chars_embedding = nn.Embedding(len(char_vocab), 30, padding_idx=char_to_idx["pad"])
     nn.init.uniform_(chars_embedding.weight, -math.sqrt(3 / 30), math.sqrt(3 / 30))
 
     # create an empty embedding matrix, each vector is size 50
-    embedding_matrix = nn.Embedding(len(vocab), 50, _freeze=False)
+    # embedding_matrix = nn.Embedding(len(vocab), 50, _freeze=False)
     # initialize the embedding matrix to random values using xavier initialization which is a good initialization for NLP tasks
-    nn.init.xavier_uniform_(embedding_matrix.weight)
+    # nn.init.xavier_uniform_(embedding_matrix.weight)
 
-    # embedding_matrix = nn.Embedding.from_pretrained(
-    #     vecs,
-    #     freeze=False,
-    # )
-    embedding_matrix.weight.requires_grad = True
+    embedding_matrix = nn.Embedding.from_pretrained(
+        vecs,
+        freeze=False,
+    )
+    # embedding_matrix.weight.requires_grad = True
 
     model = Tagger(
         task,
@@ -521,7 +496,7 @@ def main(task="ner"):
         max_word_len=max_len,
         char_to_idx=char_to_idx,
     )
-
+    
     # Load the dev data
     (
         tokens_idx_dev,
@@ -534,12 +509,14 @@ def main(task="ner"):
         char_to_idx,
         max_len,
     ) = read_data(f"./{task}/dev", task=task, vocab=vocab, labels_vocab=labels_vocab)
+    tokens_idx_dev_new = torch.tensor([window for window, label in windows_dev])
 
     dev_dataset = TensorDataset(tokens_idx_dev, labels_idx_dev)
     # Get the dev loss from the model training
     results = train_model(
         model, input_data=dataset, dev_data=dev_dataset, epochs=1, windows=windows
     )
+    torch.save(model, f"model_{task}.pt")
     # Plot the dev loss, and save
     p = plt.plot(results, label="dev loss")
     plt.title(f"{task} task")
@@ -547,4 +524,4 @@ def main(task="ner"):
 
 
 if __name__ == "__main__":
-    main("pos")
+    main("ner")

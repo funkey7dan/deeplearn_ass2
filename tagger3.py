@@ -2,10 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import os
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
-
 
 idx_to_label = {}
 idx_to_word = {}
@@ -36,7 +34,6 @@ class Tagger(nn.Module):
         embedding_matrix,
         embedding_matrix_prefixes,
         embedding_matrix_suffixes,
-        window_size=5,
     ):
         """
         Initializes a Tagger object.
@@ -46,17 +43,14 @@ class Tagger(nn.Module):
             vocab (set): The vocabulary object for the input data.
             labels_vocab (set): The vocabulary object for the output labels.
             embedding_matrix (torch.nn.Embedding): The matrix of pre-trained embeddings.
-
         Returns:
             None
         """
 
         super(Tagger, self).__init__()
-        if task == "ner":
-            output_size = 5
-        else:
-            output_size = 36  # assumming https://www.ling.upenn.edu/courses/Fall_2003/ling001/penn_treebank_pos.html
-
+        self.vocab = vocab
+        self.labels_vocab = labels_vocab
+        self.task = task
         output_size = len(labels_vocab)  # TODO check if it works for us
         hidden_size = 150
         window_size = 5
@@ -103,9 +97,7 @@ class Tagger(nn.Module):
         return x
 
 
-def train_model(
-    model, input_data, dev_data, windows, epochs=1, lr=0.01, input_data_win_index=None
-):
+def train_model(model, input_data, dev_data, windows, epochs=1, lr=0.01):
     """
     Trains a given model using the provided input and development data.
     Args:
@@ -115,18 +107,17 @@ def train_model(
             windows: The size of the windows to use.
             epochs: The number of epochs to train the model for. Default value is 1.
             lr: The learning rate to use. Default value is 0.01.
-            input_data_win_index: The index of the window in the input data. Default value is None.
     Returns:
             A list of the accuracy of the model on the development data at the end of each epoch.
     """
 
     global idx_to_label
-    BATCH_SIZE = 32
+    BATCH_SIZE = 256
     # optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
     dropout = nn.Dropout(p=0.5)
-    dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows)
+    dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data)
     print(
         f"Before Training, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
     )
@@ -146,7 +137,7 @@ def train_model(
             train_loss += loss.item()
             optimizer.step()
         # Evalaute model on dev at the end of each epoch.
-        dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows)
+        dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data)
         print(
             f"Epoch {j}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
         )
@@ -155,7 +146,7 @@ def train_model(
     return results
 
 
-def test_model(model, input_data, windows):
+def test_model(model, input_data):
     """
     This function tests a PyTorch model on given input data and returns the validation loss, overall accuracy, and
     accuracy excluding "O" labels. It takes in the following parameters:
@@ -169,7 +160,7 @@ def test_model(model, input_data, windows):
     excluding "O" labels. These values are returned as a tuple.
     """
 
-    BATCH_SIZE = 32
+    BATCH_SIZE = 256
     global idx_to_label
 
     loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True)
@@ -255,7 +246,6 @@ def read_data(
 
     global idx_to_label
     global idx_to_word
-    data = []
     if task == "ner":
         SEPARATOR = "\t"
     else:
@@ -289,7 +279,7 @@ def read_data(
     for sentence in sentences:
         tokens, labels = sentence
         for i in range(len(tokens)):
-            tokens[i] = tokens[i].strip()
+            tokens[i] = tokens[i].strip().lower()
             labels[i] = labels[i].strip()
 
         all_tokens.extend(tokens)
@@ -398,8 +388,8 @@ def read_data(
 
     tokens_idx = torch.tensor(tokens_idx_all)
     labels_idx = torch.tensor(labels_idx_all)
-    suffix_idx = torch.tensor(suffix_idx_all)
-    prefix_idx = torch.tensor(prefix_idx_all)
+    # suffix_idx = torch.tensor(suffix_idx_all)
+    # prefix_idx = torch.tensor(prefix_idx_all)
 
     return (
         tokens_idx,
@@ -465,7 +455,6 @@ def main(task="ner"):
         embedding_matrix,
         embedding_matrix_prefixes,
         embedding_matrix_suffixes,
-        window_size=1,
     )
 
     # Make a new tensor out of the windows, so the tokens are windows of size window_size in the dataset
@@ -507,19 +496,10 @@ def main(task="ner"):
     p = plt.plot(results, label="dev loss")
     plt.title(f"{task} task")
     plt.savefig(f"loss_{task}.png")
-
-    # test_data
-    # dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows)
-
-    # print(
-    #     f"Test Loss: {dev_loss}, Test Acc: {dev_acc} Acc No O:{dev_acc_clean}"
-    # )
-    # tokens_idx_test, labels_idx_test, windows_test, vocab_test, labels_vocab_test, windows_dict_test = read_data(
-    #     "./ner/test",type="test"
-    # )
-
-    # tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
+    # TODO: add test data from tagger1
 
 
 if __name__ == "__main__":
-    main("pos")
+    tasks = ["ner", "pos"]
+    for task in tasks:
+        main(task)

@@ -5,91 +5,23 @@ import numpy as np
 import os
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
+import re
+from tagger1 import Tagger
 
 
 idx_to_label = {}
 idx_to_word = {}
 
 
-class Tagger(nn.Module):
-    # TODO clean this description
-    """
-    A sequence tagger,where
-    the input is a sequence of items(in our case, a sentence of natural-language words),
-    and an output is a label for each of the item.
-    The tagger will be greedy/local and window-based. For a sequence of words
-    w1,...,wn, the tag of word wi will be based on the words in a window of
-    two words to each side of the word being tagged: wi-2,wi-1,wi,wi+1,wi+2.
-    'Greedy/local' here means that the tag assignment for word i will not depend on the tags of other words
-    each word in the window will be assigned a 50 dimensional embedding vector, using an embedding matrix E.
-    MLP with one hidden layer and tanh activation function.
-    The output of the MLP will be passed through a softmax transformation, resulting in a probability distribution.
-    The network will be trained with a cross-entropy loss.
-    The vocabulary of E will be based on the words in the training set (you are not allowed to add to E words that appear only in the dev set).
-    """
-
-    def __init__(self, task, vocab, labels_vocab, embedding_matrix):
-        """
-        Initializes a Tagger object.
-
-        Args:
-            task (str): The task to perform with the model (e.g., "ner" or "pos").
-            vocab (set): The vocabulary object for the input data.
-            labels_vocab (set): The vocabulary object for the output labels.
-            embedding_matrix (torch.nn.Embedding): The matrix of pre-trained embeddings.
-
-        Returns:
-            None
-        """
-
-        super(Tagger, self).__init__()
-        if task == "ner":
-            output_size = 5
-        else:
-            output_size = 36  # assumming https://www.ling.upenn.edu/courses/Fall_2003/ling001/penn_treebank_pos.html
-
-        output_size = len(labels_vocab)  # TODO check if it works for us
-        hidden_size = 150
-        window_size = 5
-        input_size = (
-            embedding_matrix.embedding_dim * window_size
-        )  # 5 concat. 50 dimensional embedding vectors, output over labels
-        self.in_linear = nn.Linear(input_size, hidden_size)
-        self.out_linear = nn.Linear(hidden_size, output_size)
-        # self.softmax = nn.Softmax()
-        self.embedding_matrix = embedding_matrix
-        self.activate = nn.Tanh()
-
-    def forward(self, x):
-        """
-        Forward pass of the tagger.
-        Expects x of shape (batch_size, window total size), which means 32 windows for example.
-
-        Args:
-            x: A tensor of shape (batch_size, seq_len) of word indices.
-
-        Returns:
-            A tensor of shape (batch_size, output_dim).
-        """
-        # Concatenate the word embedding vectors of the words in the window to create a single vector for the window.
-        # x.shape[1] is the size of window, which is 5 in our case.
-        # self.embedding_matrix(x[:,i]) is the 32 x 50 embedding matrix of the i'th items in the window.
-        # torch.cat concatenates the 5 32 x 50 embedding matrix of the i'th items in the window to a 32 x 250 matrix, which we can pass to the linear layer.
-        # x = torch.cat(
-        #     [self.embedding_matrix(x[:, i]) for i in range(x.shape[1])], dim=1
-        # )
-        x = self.embedding_matrix(x).view(
-            -1, 250
-        )  # Faster than the above and equivalent
-        x = self.in_linear(x)
-        x = self.activate(x)
-        x = self.out_linear(x)
-        # x = self.softmax(x) #TODO: we are using cross-entropy loss therefore we maybe don't need softmax
-        return x
-
-
 def train_model(
-    model, input_data, dev_data, windows, epochs=1, lr=0.01, input_data_win_index=None
+    model,
+    input_data,
+    dev_data,
+    windows,
+    epochs=1,
+    lr=0.01,
+    input_data_win_index=None,
+    task="ner",
 ):
     """
     Trains a given model using the provided input and development data.
@@ -107,16 +39,17 @@ def train_model(
 
     global idx_to_label
     BATCH_SIZE = 256
-    # optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
     dropout = nn.Dropout(p=0.5)
-    dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows)
+    dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, task=task)
     print(
         f"Before Training, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
     )
 
-    results = []
+    dev_loss_results = []
+    dev_acc_results = []
+    dev_acc_no_o_results = []
     for j in range(epochs):
         model.train()
         train_loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True)
@@ -130,17 +63,20 @@ def train_model(
             loss.backward()
             train_loss += loss.item()
             optimizer.step()
-        # Evalaute model on dev at the end of each epoch.
-        dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows)
+        # Evaluate model on dev at the end of each epoch.
+        dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, task=task)
         print(
-            f"Epoch {j}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
+            f"Epoch {j+1}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
         )
         sched.step()
-        results.append(dev_loss)
-    return results
+        dev_loss_results.append(dev_loss)
+        dev_acc_results.append(dev_acc)
+        dev_acc_no_o_results.append(dev_acc_clean)
+
+    return dev_loss_results, dev_acc_results, dev_acc_no_o_results
 
 
-def test_model(model, input_data, windows):
+def test_model(model, input_data, task):
     """
     This function tests a PyTorch model on given input data and returns the validation loss, overall accuracy, and
     accuracy excluding "O" labels. It takes in the following parameters:
@@ -154,10 +90,10 @@ def test_model(model, input_data, windows):
     excluding "O" labels. These values are returned as a tuple.
     """
 
-    BATCH_SIZE = 32
+    BATCH_SIZE = 256
     global idx_to_label
 
-    loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True)
+    loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
     running_val_loss = 0
     with torch.no_grad():
         model.eval()
@@ -170,19 +106,23 @@ def test_model(model, input_data, windows):
             # y_hat = dropout(y_hat)
             val_loss = F.cross_entropy(y_hat, y)
             # Create a list of predicted labels and actual labels
-            y_hat_labels = [idx_to_label[i.item()] for i in y_hat.argmax(dim=1)]
-            y_labels = [idx_to_label[i.item()] for i in y]
-            # Count the number of correct labels th
-            y_agreed = sum(
-                [
-                    1 if (i == j and j != "O") else 0
-                    for i, j in zip(y_hat_labels, y_labels)
-                ]
-            )
             count += sum(y_hat.argmax(dim=1) == y).item()
-            count_no_o += y_agreed
-            to_remove += y_labels.count("O")
             running_val_loss += val_loss.item()
+            if task == "ner":
+                y_hat_labels = [idx_to_label[i.item()] for i in y_hat.argmax(dim=1)]
+                y_labels = [idx_to_label[i.item()] for i in y]
+                # Count the number of correct labels th
+                y_agreed = sum(
+                    [
+                        1 if (i == j and j != "O") else 0
+                        for i, j in zip(y_hat_labels, y_labels)
+                    ]
+                )
+                count_no_o += y_agreed
+                to_remove += y_labels.count("O")
+            else:
+                count_no_o = count
+                to_remove = 0
 
     return (
         running_val_loss / k,
@@ -212,6 +152,29 @@ def replace_rare(dataset):
     # print(rare_words)
     updated = [word if word not in rare_words else "UUUNKKK" for word in dataset]
     return updated
+
+
+dg_pattern = re.compile(r"^[.+-]?(DG\.?)+$")
+
+
+def check_dg_pattern(s):
+    # Replace all digits with "DG"
+    s = re.sub(r"\d+", "DG", s)
+    # Check if the resulting string matches the pattern
+    if dg_pattern.match(s) is not None:
+        return s
+    return None
+
+
+def check_if_a_number(word, vocab):
+    s = check_dg_pattern(word)
+    if s is not None and s in vocab:
+        return s
+    elif all(ch.isdigit() or ch == "," for ch in word) and any(
+        ch.isdigit() for ch in word
+    ):
+        return "NNNUMMM"
+    return None
 
 
 def read_data(
@@ -263,8 +226,15 @@ def read_data(
             else:
                 token = line.strip()
                 label = ""
-            if any(char.isdigit() for char in token) and label == "O":
-                token = "NNNUMMM"
+
+            # if any(char.isdigit() for char in token) and label == "O":
+            #     token = "NNNUMMM"
+
+            # Replace all digits with "DG" patterns as in the vocabulary
+            if any(char.isdigit() for char in token):
+                t = check_if_a_number(token, vocab)
+                if t is not None:
+                    token = t
             tokens.append(token)
             labels.append(label)
     # Preprocess data
@@ -275,7 +245,7 @@ def read_data(
         tokens, labels = sentence
         for i in range(len(tokens)):
             tokens[i] = tokens[i].strip().lower()
-            labels[i] = labels[i].strip().lower()
+            labels[i] = labels[i].strip()
 
         all_tokens.extend(tokens)
         all_labels.extend(labels)
@@ -285,7 +255,7 @@ def read_data(
         sentence[0].extend(tokens)
         sentence[1].clear()
         sentence[1].extend(labels)
-    # tokens = replace_rare(tokens)
+    tokens = replace_rare(tokens)
     if not vocab:
         vocab = set(all_tokens)  # build a vocabulary of unique tokens
     vocab.add("<PAD>")  # add a padding token
@@ -348,6 +318,27 @@ def load_embedding_matrix(embedding_path):
     return vocab, vecs
 
 
+def plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task):
+    # # Plot the dev loss, and save
+    tagger_name = os.path.basename(__file__).split(".")[0]
+    plt.plot(dev_loss, label="dev loss")
+    plt.title(f"{task} task")
+    plt.savefig(f"loss_{task}_{tagger_name}.png")
+    # plt.show()
+    #
+    # # Plot the dev accuracy, and save
+    plt.plot(dev_accuracy, label="dev accuracy")
+    plt.title(f"{task} task")
+    plt.savefig(f"accuracy_{task}_{tagger_name}.png")
+    # plt.show()
+    #
+    # # Plot the dev accuracy no O, and save
+    plt.plot(dev_accuracy_no_o, label="dev accuracy no o")
+    plt.title(f"{task} task")
+    plt.savefig(f"accuracy_no_O_{task}_{tagger_name}.png")
+    # plt.show()
+
+
 def main(task="ner"):
     _, vecs = load_embedding_matrix(f"./wordVectors.txt")
 
@@ -386,26 +377,20 @@ def main(task="ner"):
     tokens_idx_dev_new = torch.tensor([window for window, label in windows_dev])
     dev_dataset = TensorDataset(tokens_idx_dev_new, labels_idx_dev)
     # Get the dev loss from the model training
-    results = train_model(
-        model, input_data=dataset, dev_data=dev_dataset, epochs=10, windows=windows
+    dev_loss, dev_accuracy, dev_accuracy_no_o = train_model(
+        model,
+        input_data=dataset,
+        dev_data=dev_dataset,
+        epochs=10,
+        lr=0.005,
+        task=task,
     )
-    # Plot the dev loss, and save
-    p = plt.plot(results, label="dev loss")
-    plt.title(f"{task} task")
-    plt.savefig(f"loss_{task}.png")
 
-    # test_data
-    # dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows)
-
-    # print(
-    #     f"Test Loss: {dev_loss}, Test Acc: {dev_acc} Acc No O:{dev_acc_clean}"
-    # )
-    # tokens_idx_test, labels_idx_test, windows_test, vocab_test, labels_vocab_test, windows_dict_test = read_data(
-    #     "./ner/test",type="test"
-    # )
-
-    # tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
+    plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task)
+    # TODO: add test from tagger1.py
 
 
 if __name__ == "__main__":
-    main("pos")
+    tasks = ["ner", "pos"]
+    for task in tasks:
+        main(task)

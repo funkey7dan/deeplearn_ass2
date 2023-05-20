@@ -2,10 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import os
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
-import time
 
 idx_to_label = {}
 idx_to_word = {}
@@ -26,11 +24,8 @@ class Tagger(nn.Module):
             None
         """
         super(Tagger, self).__init__()
-        if task == "ner":
-            output_size = 5
-        else:
-            output_size = 36  # assumming https://www.ling.upenn.edu/courses/Fall_2003/ling001/penn_treebank_pos.html
-
+        self.task = task
+        self.vocab = vocab
         output_size = len(labels_vocab)
         hidden_size = 150
         window_size = 5
@@ -73,10 +68,8 @@ def train_model(
     model,
     input_data,
     dev_data,
-    windows,
     epochs=1,
     lr=0.01,
-    input_data_win_index=None,
     task="ner",
 ):
     """
@@ -85,10 +78,8 @@ def train_model(
             model: The model to train.
             input_data: The training data.
             dev_data: The development data to evaluate the model.
-            windows: The size of the windows to use.
             epochs: The number of epochs to train the model for. Default value is 1.
             lr: The learning rate to use. Default value is 0.01.
-            input_data_win_index: The index of the window in the input data. Default value is None.
     Returns:
             A list of the accuracy of the model on the development data at the end of each epoch.
     """
@@ -100,13 +91,13 @@ def train_model(
         optimizer, step_size=3, gamma=0.1
     )  # scheduler that every 3 epochs it updates the lr
     dropout = nn.Dropout(p=0.5)
-    dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows, task=task)
+    dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, task=task)
     print(
         f"Before Training, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
     )
 
     best_loss = 100000
-    best_model = None
+    best_weights = None
 
     dev_loss_results = []
     dev_acc_results = []
@@ -127,9 +118,7 @@ def train_model(
             train_loss += loss.item()
             optimizer.step()
         # Evaluate model on dev at the end of each epoch.
-        dev_loss, dev_acc, dev_acc_clean = test_model(
-            model, dev_data, windows, task=task
-        )
+        dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, task=task)
 
         # Save best model
         if dev_loss < best_loss:
@@ -150,24 +139,25 @@ def train_model(
         dev_acc_no_o_results.append(dev_acc_clean)
     # load best weights
     model.load_state_dict(best_weights)
+    filename = os.path.basename(__file__)[0].split(".")[0]
+    torch.save(model, f"{filename}_best_model_{task}.pth")
     return dev_loss_results, dev_acc_results, dev_acc_no_o_results
 
 
-def test_model(model, input_data, windows, task):
+def test_model(model, input_data, task):
     """
     This function tests a PyTorch model on given input data and returns the validation loss, overall accuracy, and
     accuracy excluding "O" labels. It takes in the following parameters:
 
     - model: a PyTorch model to be tested
     - input_data: a dataset to test the model on
-    - windows: a parameter that is not used in the function
 
     The function first initializes a batch size of 32 and a global variable idx_to_label. It then creates a DataLoader
     object with the input_data and the batch size, and calculates the validation loss, overall accuracy, and accuracy
     excluding "O" labels. These values are returned as a tuple.
     """
 
-    BATCH_SIZE = 32
+    BATCH_SIZE = 256
     global idx_to_label
 
     loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
@@ -208,7 +198,7 @@ def test_model(model, input_data, windows, task):
     )
 
 
-def run_inference(model, input_data, windows, task, original_words):
+def run_inference(model, input_data, task, original_words):
     """
     This function tests a PyTorch model on given input data and returns the validation loss, overall accuracy, and
     accuracy excluding "O" labels. It takes in the following parameters:
@@ -232,11 +222,13 @@ def run_inference(model, input_data, windows, task, original_words):
         for k, data in enumerate(loader, 0):
             x, y = data
             y_hat = model.forward(x)
-            x_tokens = [original_words[i+BATCH_SIZE*k] for i, _ in enumerate(x)]
+            x_tokens = [original_words[i + BATCH_SIZE * k] for i, _ in enumerate(x)]
             y_hat_labels = [idx_to_label[i.item()] for i in y_hat.argmax(dim=1)]
             predictions.extend(zip(x_tokens, y_hat_labels))
 
-    with open(f"test1.{task}", "w") as f:
+    # find which tagger we are using
+    tagger_idx = re.findall(r"\d+", os.path.basename(__file__))[0]
+    with open(f"test{tagger_idx}.{task}", "w") as f:
         for pred in predictions:
             f.write(f"{pred[0]} {pred[1]}" + "\n")
 
@@ -282,7 +274,7 @@ def read_data(
 
     global idx_to_label
     global idx_to_word
-    data = []
+
     if task == "ner":
         SEPARATOR = "\t"
     else:
@@ -317,7 +309,7 @@ def read_data(
     for sentence in sentences:
         tokens, labels = sentence
         for i in range(len(tokens)):
-            tokens[i] = tokens[i].strip()
+            tokens[i] = tokens[i].strip().lower()
             labels[i] = labels[i].strip()
 
         all_tokens.extend(tokens)
@@ -394,21 +386,22 @@ def read_data(
 
 def plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task):
     # # Plot the dev loss, and save
+    tagger_name = os.path.basename(__file__).split(".")[0]
     plt.plot(dev_loss, label="dev loss")
     plt.title(f"{task} task")
-    plt.savefig(f"loss_{task}.png")
+    plt.savefig(f"loss_{task}_{tagger_name}.png")
     # plt.show()
     #
     # # Plot the dev accuracy, and save
     plt.plot(dev_accuracy, label="dev accuracy")
     plt.title(f"{task} task")
-    plt.savefig(f"accuracy_{task}.png")
+    plt.savefig(f"accuracy_{task}_{tagger_name}.png")
     # plt.show()
     #
     # # Plot the dev accuracy no O, and save
     plt.plot(dev_accuracy_no_o, label="dev accuracy no o")
     plt.title(f"{task} task")
-    plt.savefig(f"accuracy_no_O{task}.png")
+    plt.savefig(f"accuracy_no_O_{task}_{tagger_name}.png")
     # plt.show()
 
 
@@ -455,12 +448,11 @@ def main(task="ner"):
         input_data=dataset,
         dev_data=dev_dataset,
         epochs=1,
-        windows=windows,
         lr=0.005,
         task=task,
     )
 
-    # plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task)
+    plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task)
 
     print("Test")
     (
@@ -480,10 +472,13 @@ def main(task="ner"):
     # dev_loss, dev_acc, dev_acc_clean = test_model(
     #     model, test_dataset, windows, task="ner"
     # )
-    run_inference(model, test_dataset, windows, task, og_tokens)
+    run_inference(model, test_dataset, task, og_tokens)
+
     # print(f"Test Loss: {dev_loss}, Test Acc: {dev_acc} Acc No O:{dev_acc_clean}")
     # tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
 
 
 if __name__ == "__main__":
-    main("pos")
+    tasks = ["ner", "pos"]
+    for task in tasks:
+        main(task)
