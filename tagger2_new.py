@@ -259,8 +259,18 @@ def run_inference(model, input_data, task, original_words):
             f.write(f"{pred[0]} {pred[1]}" + "\n")
 
 
+def load_embedding_matrix():
+    with open("vocab.txt", "r", encoding="utf-8") as file:
+        vocab = file.readlines()
+        vocab = [word.strip() for word in vocab]
+    vecs = np.loadtxt("wordVectors.txt")
+    vecs = torch.from_numpy(vecs)
+    vecs = vecs.float()
+    return vocab, vecs
+
+
 def read_data(
-        fname, window_size=2, vocab=None, labels_vocab=None, type="train", task=None
+        fname, embedding_vecs, window_size=2, vocab=None, labels_vocab=None, type="train", task=None, pretrained_words_vocab=None
 ):
     """
     Reads in data from a file and preprocesses it for use in a neural network model.
@@ -311,7 +321,7 @@ def read_data(
             if type != "test":
                 token, label = line.split(SEPARATOR)
                 if type == "dev":
-                    token = token.strip()
+                    token = token.strip().lower()
                 else:
                     token = token.strip()
                 label = label.strip()
@@ -332,6 +342,17 @@ def read_data(
         vocab.sort()
         vocab.append("PAD")  # add a padding token
         vocab.append("UNK")  # add an unknown token
+
+        train_missing_embeddings = [word for word in vocab if word not in pretrained_words_vocab]
+        for word in train_missing_embeddings:
+            size = embedding_vecs.shape[1]  # Get the size of the vector
+            vector = torch.empty(1, size)
+            nn.init.xavier_uniform_(vector)  # Apply Xavier uniform initialization
+            embedding_vecs = torch.cat((embedding_vecs, vector), dim=0)  # add as last row
+            pretrained_words_vocab.append(word)  # add as last word
+        # if we're using pretrained embeddings, the vocabulary changes. turning this into a set doesn't change
+        # the size, these are already unique words.
+        vocab = pretrained_words_vocab
 
     # if in train case
     if not labels_vocab:
@@ -356,7 +377,7 @@ def read_data(
                 for _ in range(window_size - i):
                     window.append(tokens_to_idx["PAD"])
             extra_words = tokens[max(0, i - window_size):min(len(tokens), i + window_size + 1)]
-            window.extend([tokens_to_idx[token] if token in tokens_to_idx.keys() else tokens_to_idx["UNK"] for token in
+            window.extend([tokens_to_idx[token.lower()] if token.lower() in tokens_to_idx.keys() else tokens_to_idx["UNK"] for token in
                            extra_words])
 
             if i > len(tokens) - window_size - 1:
@@ -371,7 +392,7 @@ def read_data(
         for i in windows:
             f.write(str(i[0])+str(i[1])+"\n")
 
-    return torch.tensor(labels_idx), windows, vocab, labels_vocab, labels_to_idx, all_tokens
+    return torch.tensor(labels_idx), windows, vocab, labels_vocab, labels_to_idx, all_tokens, embedding_vecs
 
 
 def plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task):
@@ -396,13 +417,13 @@ def plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task):
 
 
 def main(task="ner"):
-    labels_idx, windows, vocab, labels_vocab, labels_to_idx, _ = read_data(fname=f"./{task}/train", task=task, type="train")
+    words_embedding_vocabulary, embedding_vecs = load_embedding_matrix()
+    labels_idx, windows, vocab, labels_vocab, labels_to_idx, _, embedding_vecs = read_data(embedding_vecs=embedding_vecs, fname=f"./{task}/train", task=task, type="train", pretrained_words_vocab=words_embedding_vocabulary)
 
-    labels_idx_dev, windows_dev, _, _, _, _ = read_data(vocab=vocab, labels_vocab=labels_vocab, fname=f"./{task}/dev", task=task, type="dev")
+    labels_idx_dev, windows_dev, _, _, _, _, embedding_vecs = read_data(pretrained_words_vocab=words_embedding_vocabulary, embedding_vecs=embedding_vecs, vocab=vocab, labels_vocab=labels_vocab, fname=f"./{task}/dev", task=task, type="dev")
 
     # initialize model and embedding matrix and dataset
-    embedding_matrix = nn.Embedding(len(vocab), 50)
-    nn.init.xavier_uniform_(embedding_matrix.weight)
+    embedding_matrix = nn.Embedding.from_pretrained(embedding_vecs, freeze=False)
 
     model = Tagger(vocab, labels_vocab, embedding_matrix)
     word_window_idx = torch.tensor(windows)
@@ -420,11 +441,10 @@ def main(task="ner"):
     plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task)
 
     print("Test")
-    _, windows_test, _, _, _, original_words = \
-        read_data(fname=f"./{task}/test", vocab=vocab, labels_vocab=labels_vocab,
+    _, windows_test, _, _, _, original_words, embedding_vecs = \
+        read_data(embedding_vecs=embedding_vecs, fname=f"./{task}/test", vocab=vocab, labels_vocab=labels_vocab,
                          type="test", task=task)
 
-    # word_window_idx_test = torch.tensor([window for window, tag in windows_test])
     word_window_idx_test = torch.tensor(windows_test)
     test_dataset = TensorDataset(word_window_idx_test, torch.tensor([0] * len(word_window_idx_test)))
 
