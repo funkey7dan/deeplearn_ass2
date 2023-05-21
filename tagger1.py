@@ -98,7 +98,6 @@ def train_model(
 
     best_loss = 100000
     best_weights = None
-
     dev_loss_results = []
     dev_acc_results = []
     dev_acc_no_o_results = []
@@ -464,23 +463,6 @@ def main(task="ner"):
         windows_dict_test,
         og_tokens,
     ) = read_data(f"./{task}/test", type="test", vocab=vocab, labels_vocab=labels_vocab)
-    # # Plot the dev loss, and save
-    # plt.plot(dev_loss, label="dev loss")
-    # plt.title(f"{task} task")
-    # plt.savefig(f"loss_{task}.png")
-    # plt.show()
-    #
-    # # Plot the dev accuracy, and save
-    # plt.plot(dev_accuracy, label="dev accuracy")
-    # plt.title(f"{task} task")
-    # plt.savefig(f"accuracy_{task}.png")
-    # plt.show()
-    #
-    # # Plot the dev accuracy no O, and save
-    # plt.plot(dev_accuracy_no_o, label="dev accuracy no o")
-    # plt.title(f"{task} task")
-    # plt.savefig(f"accuracy_no_O{task}.png")
-    # plt.show()
 
     token_idx_test_new = torch.tensor([window for window, label in windows_test])
     test_dataset = TensorDataset(token_idx_test_new, labels_idx_test)

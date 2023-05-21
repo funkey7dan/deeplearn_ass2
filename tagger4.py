@@ -64,7 +64,7 @@ class Tagger(nn.Module):
         self.word_cnn = WordCNN(
             char_embedding,
             num_filters=30,
-            window_size=3,
+            window_size=5,
             max_word_len=max_word_len,
             char_to_idx=char_to_idx,
         )
@@ -105,7 +105,6 @@ class WordCNN(nn.Module):
 
         # The input is the size of each char embedding
         conv_input_dim = self.char_embedding_dim
-        conv_output_dim = conv_input_dim * num_filters
         self.conv1d = nn.Conv1d(
             conv_input_dim,
             num_filters,
@@ -132,8 +131,8 @@ class WordCNN(nn.Module):
             padding_front = math.floor((self.max_word_len - len(word)) / 2)
             padding_back = self.max_word_len - len(word) - padding_front
             # Repeat the padding tensor {padding} times
-            #padding_front_tensor = padding_tensor.repeat(padding_front, 1)
-            #padding_back_tensor = padding_tensor.repeat(padding_back, 1)
+            # padding_front_tensor = padding_tensor.repeat(padding_front, 1)
+            # padding_back_tensor = padding_tensor.repeat(padding_back, 1)
 
             if not word in word_chars_cache:
                 word_chars_cache[word] = [self.char_to_idx[char] for char in word]
@@ -184,7 +183,12 @@ def train_model(
         f"Before Training, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
     )
 
-    results = []
+    best_loss = 100000
+    best_weights = None
+    dev_loss_results = []
+    dev_acc_results = []
+    dev_acc_no_o_results = []
+
     for j in range(epochs):
         model.train()
         train_loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True)
@@ -201,12 +205,29 @@ def train_model(
             optimizer.step()
         # Evaluate model on dev at the end of each epoch.
         dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, windows)
-        print(
-            f"Epoch {j+1}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
-        )
+
+        # Save best model
+        if dev_loss < best_loss:
+            best_loss = dev_loss
+            best_weights = model.state_dict()
+
+        if task == "ner":
+            print(
+                f"Epoch {j+1}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
+            )
+        else:
+            print(
+                f"Epoch {j+1}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc}"
+            )
         sched.step()
-        results.append(dev_loss)
-    return results
+        dev_loss_results.append(dev_loss)
+        dev_acc_results.append(dev_acc)
+        dev_acc_no_o_results.append(dev_acc_clean)
+    # load best weights
+    model.load_state_dict(best_weights)
+    filename = os.path.basename(__file__).split(".")[0]
+    torch.save(model, f"{filename}_best_model_{task}.pth")
+    return dev_loss_results, dev_acc_results, dev_acc_no_o_results
 
 
 def test_model(model, input_data, windows):
@@ -260,19 +281,11 @@ def test_model(model, input_data, windows):
     )
 
 
-def replace_rare(dataset):
+def replace_rare(dataset, threshold=1):
     from collections import Counter
 
-    # Define a threshold for word frequency
-    threshold = 2
-
-    # Load the dataset into a list of strings (one string per document)
-
-    # Tokenize the dataset into a list of words
-    words = [word for doc in dataset for word in doc.split()]
-
     # Count the frequency of each word
-    word_counts = Counter(words)
+    word_counts = Counter(dataset)
 
     # Find the set of rare words (words that occur less than the threshold)
     rare_words = set(word for word in word_counts if word_counts[word] < threshold)
@@ -364,11 +377,6 @@ def read_data(
     if not labels_vocab:
         labels_vocab = set(all_labels)
 
-    # prefixes_vocab = set([word[:3] for word in all_tokens])
-    # suffixes_vocab = set([word[-3:] for word in all_tokens])
-    # prefix_to_idx = {word: i for i, word in enumerate(prefixes_vocab)}
-    # suffixes_to_idx = {word: i for i, word in enumerate(suffixes_vocab)}
-
     # Create a vocabulary of unique characters for character embeddings
     char_set = string.ascii_lowercase + string.digits + string.punctuation + " "
     char_vocab = set([char for char in char_set])
@@ -454,6 +462,27 @@ def load_embedding_matrix(embedding_path):
     return vocab, vecs
 
 
+def plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task):
+    # # Plot the dev loss, and save
+    tagger_name = os.path.basename(__file__).split(".")[0]
+    plt.plot(dev_loss, label="dev loss")
+    plt.title(f"{task} task")
+    plt.savefig(f"loss_{task}_{tagger_name}.png")
+    # plt.show()
+    #
+    # # Plot the dev accuracy, and save
+    plt.plot(dev_accuracy, label="dev accuracy")
+    plt.title(f"{task} task")
+    plt.savefig(f"accuracy_{task}_{tagger_name}.png")
+    # plt.show()
+    #
+    # # Plot the dev accuracy no O, and save
+    plt.plot(dev_accuracy_no_o, label="dev accuracy no o")
+    plt.title(f"{task} task")
+    plt.savefig(f"accuracy_no_O_{task}_{tagger_name}.png")
+    # plt.show()
+
+
 def main(task="ner"):
     _, vecs = load_embedding_matrix(f"./wordVectors.txt")
     (
@@ -468,7 +497,7 @@ def main(task="ner"):
         max_len,
     ) = read_data(f"./{task}/train", task=task)
     # Create embedding matrices for the prefixes and suffixes
-    
+
     dataset = TensorDataset(tokens_idx, labels_idx)
 
     # Initialize the character embedding matrix, each vector is size 30
@@ -496,7 +525,7 @@ def main(task="ner"):
         max_word_len=max_len,
         char_to_idx=char_to_idx,
     )
-    
+
     # Load the dev data
     (
         tokens_idx_dev,
@@ -513,15 +542,15 @@ def main(task="ner"):
 
     dev_dataset = TensorDataset(tokens_idx_dev, labels_idx_dev)
     # Get the dev loss from the model training
-    results = train_model(
-        model, input_data=dataset, dev_data=dev_dataset, epochs=1, windows=windows
+    dev_loss, dev_accuracy, dev_accuracy_no_o = train_model(
+        model, input_data=dataset, dev_data=dev_dataset, epochs=5, windows=windows
     )
+
     torch.save(model, f"model_{task}.pt")
-    # Plot the dev loss, and save
-    p = plt.plot(results, label="dev loss")
-    plt.title(f"{task} task")
-    plt.savefig(f"loss_{task}.png")
+    plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task=task)
 
 
 if __name__ == "__main__":
-    main("ner")
+    tasks = ["ner", "pos"]
+    for task in tasks:
+        main(task)

@@ -4,9 +4,12 @@ import torch.nn.functional as F
 import numpy as np
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
+import re
 
 idx_to_label = {}
 idx_to_word = {}
+idx_to_suffix = {}
+idx_to_prefix = {}
 
 
 class Tagger(nn.Module):
@@ -83,7 +86,6 @@ class Tagger(nn.Module):
         # x = torch.cat(
         #     [self.embedding_matrix(x[:, i]) for i in range(x.shape[1])], dim=1
         # )
-
         x = self.embedding_matrix(x).view(
             -1, 250
         )  # Faster than the above and equivalent
@@ -197,19 +199,11 @@ def test_model(model, input_data):
     )
 
 
-def replace_rare(dataset):
+def replace_rare(dataset, threshold=1):
     from collections import Counter
 
-    # Define a threshold for word frequency
-    threshold = 2
-
-    # Load the dataset into a list of strings (one string per document)
-
-    # Tokenize the dataset into a list of words
-    words = [word for doc in dataset for word in doc.split()]
-
     # Count the frequency of each word
-    word_counts = Counter(words)
+    word_counts = Counter(dataset)
 
     # Find the set of rare words (words that occur less than the threshold)
     rare_words = set(word for word in word_counts if word_counts[word] < threshold)
@@ -218,6 +212,29 @@ def replace_rare(dataset):
     # print(rare_words)
     updated = [word if word not in rare_words else "UUUNKKK" for word in dataset]
     return updated
+
+
+dg_pattern = re.compile(r"^[.+-]?(DG\.?)+$")
+
+
+def check_dg_pattern(s):
+    # Replace all digits with "DG"
+    s = re.sub(r"\d+", "DG", s)
+    # Check if the resulting string matches the pattern
+    if dg_pattern.match(s) is not None:
+        return s
+    return None
+
+
+def check_if_a_number(word, vocab):
+    s = check_dg_pattern(word)
+    if s is not None and s in vocab:
+        return s
+    elif all(ch.isdigit() or ch == "," for ch in word) and any(
+        ch.isdigit() for ch in word
+    ):
+        return "NNNUMMM"
+    return None
 
 
 def read_data(
@@ -246,6 +263,9 @@ def read_data(
 
     global idx_to_label
     global idx_to_word
+    global idx_to_prefix
+    global idx_to_suffix
+
     if task == "ner":
         SEPARATOR = "\t"
     else:
@@ -268,8 +288,13 @@ def read_data(
             else:
                 token = line.strip()
                 label = ""
-            if any(char.isdigit() for char in token) and label == "O":
-                token = "NNNUMMM"
+            # if any(char.isdigit() for char in token) and label == "O":
+            #     token = "NNNUMMM"
+            # Replace all digits with "DG" patterns as in the vocabulary
+            if any(char.isdigit() for char in token):
+                t = check_if_a_number(token, vocab)
+                if t is not None:
+                    token = t
             tokens.append(token)
             labels.append(label)
     # Preprocess data
@@ -290,12 +315,12 @@ def read_data(
         sentence[0].extend(tokens)
         sentence[1].clear()
         sentence[1].extend(labels)
-    # tokens = replace_rare(tokens)
+    tokens = replace_rare(tokens)
     all_tokens.extend(["<PAD>", "UUUNKKK"])
     if not vocab:
         # all_tokens.extend(["<PAD>","UUUNKKK"])
         vocab = set(all_tokens)  # build a vocabulary of unique tokens
-    # vocab.add("<PAD>")  # add a padding token
+    vocab.add("<PAD>")  # add a padding token
     # vocab.add("UUUNKKK")  # add an unknown token
     if not labels_vocab:
         labels_vocab = set(all_labels)
@@ -312,6 +337,8 @@ def read_data(
 
     idx_to_label = {i: label for label, i in labels_to_idx.items()}
     idx_to_word = {i: word for word, i in word_to_idx.items()}
+    idx_to_prefix = {i: word for word, i in prefix_to_idx.items()}
+    idx_to_suffix = {i: word for word, i in suffixes_to_idx.items()}
 
     # Create windows, each window will be of size window_size, padded with -1
     # for token of index i, w_i the window is: ([w_i-2,w_i-1 i, w_i+1,w_i+2],label of w_i)
@@ -429,7 +456,7 @@ def main(task="ner"):
         suffix_windows,
         prefixes_vocab,
         suffixes_vocab,
-    ) = read_data(f"./{task}/train", task=task)
+    ) = read_data(f"./{task}/train", task=task, vocab=_)
     # Create embedding matrices for the prefixes and suffixes
 
     embedding_matrix_prefixes = nn.Embedding(len(prefixes_vocab), 50)
@@ -438,15 +465,15 @@ def main(task="ner"):
     nn.init.xavier_uniform_(embedding_matrix_suffixes.weight)
 
     # create an empty embedding matrix, each vector is size 50
-    embedding_matrix = nn.Embedding(len(vocab), 50, _freeze=False)
+    # embedding_matrix = nn.Embedding(len(vocab), 50, _freeze=False)
     # initialize the embedding matrix to random values using xavier initialization which is a good initialization for NLP tasks
-    nn.init.xavier_uniform_(embedding_matrix.weight)
+    # nn.init.xavier_uniform_(embedding_matrix.weight)
 
-    # embedding_matrix = nn.Embedding.from_pretrained(
-    #     vecs,
-    #     freeze=False,
-    # )
-    embedding_matrix.weight.requires_grad = True
+    embedding_matrix = nn.Embedding.from_pretrained(
+        vecs,
+        freeze=False,
+    )
+    # embedding_matrix.weight.requires_grad = True
 
     model = Tagger(
         task,

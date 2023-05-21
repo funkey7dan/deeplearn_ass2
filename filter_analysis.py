@@ -29,7 +29,7 @@ sequence_length = 100
 input_channels = 30
 
 # Create an input sequence of 54 characters
-sequence = "This is a sequence of characters"
+sequence = "ing"
 word = sequence[:54].lower()
 
 # Get the maximum word length allowed by the model

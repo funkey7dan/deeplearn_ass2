@@ -17,7 +17,6 @@ def train_model(
     model,
     input_data,
     dev_data,
-    windows,
     epochs=1,
     lr=0.01,
     input_data_win_index=None,
@@ -131,19 +130,11 @@ def test_model(model, input_data, task):
     )
 
 
-def replace_rare(dataset):
+def replace_rare(dataset, threshold=1):
     from collections import Counter
 
-    # Define a threshold for word frequency
-    threshold = 2
-
-    # Load the dataset into a list of strings (one string per document)
-
-    # Tokenize the dataset into a list of words
-    words = [word for doc in dataset for word in doc.split()]
-
     # Count the frequency of each word
-    word_counts = Counter(words)
+    word_counts = Counter(dataset)
 
     # Find the set of rare words (words that occur less than the threshold)
     rare_words = set(word for word in word_counts if word_counts[word] < threshold)
