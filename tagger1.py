@@ -1,21 +1,22 @@
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
+import re
+import os
 
 idx_to_label = {}
 idx_to_word = {}
 
 
 class Tagger(nn.Module):
-    def __init__(self, task, vocab, labels_vocab, embedding_matrix):
+    def __init__(self, vocab, labels_vocab, embedding_matrix):
         """
         Initializes a Tagger object.
 
         Args:
-            task (str): The task to perform with the model (e.g., "ner" or "pos").
             vocab (set): The vocabulary object for the input data.
             labels_vocab (set): The vocabulary object for the output labels.
             embedding_matrix (torch.nn.Embedding): The matrix of pre-trained embeddings.
@@ -24,18 +25,20 @@ class Tagger(nn.Module):
             None
         """
         super(Tagger, self).__init__()
-        self.task = task
         self.vocab = vocab
-        output_size = len(labels_vocab)
-        hidden_size = 150
         window_size = 5
-        input_size = (
-            embedding_matrix.embedding_dim * window_size
-        )  # 5 concat. 50 dimensional embedding vectors, output over labels
+
+        # 5 concat. 50 dimensional embedding vectors, output over labels
+        input_size = embedding_matrix.embedding_dim * window_size
+        hidden_size = 500
+        output_size = len(labels_vocab)
+
         self.in_linear = nn.Linear(input_size, hidden_size)
         self.out_linear = nn.Linear(hidden_size, output_size)
         self.embedding_matrix = embedding_matrix
-        self.activate = nn.Tanh()
+        self.tanh = nn.Tanh()
+        self.softmax = nn.Softmax(dim=1)
+        self.dropout = nn.Dropout(p=0.5)
 
     def forward(self, x):
         """
@@ -59,7 +62,8 @@ class Tagger(nn.Module):
             -1, 250
         )  # Faster than the above and equivalent
         x = self.in_linear(x)
-        x = self.activate(x)
+        x = self.tanh(x)
+        x = self.dropout(x)
         x = self.out_linear(x)
         return x
 
@@ -68,8 +72,9 @@ def train_model(
     model,
     input_data,
     dev_data,
+    labels_to_idx,
     epochs=1,
-    lr=0.01,
+    lr=0.0001,
     task="ner",
 ):
     """
@@ -85,24 +90,26 @@ def train_model(
     """
 
     global idx_to_label
-    BATCH_SIZE = 256
+    BATCH_SIZE = 1024
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    sched = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=3, gamma=0.1
-    )  # scheduler that every 3 epochs it updates the lr
-    dropout = nn.Dropout(p=0.5)
-    dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, task=task)
-    print(
-        f"Before Training, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
-    )
+    model.train()
+
+    # sched = torch.optim.lr_scheduler.StepLR(
+    #     optimizer, step_size=3, gamma=0.1
+    # )  # scheduler that every 3 epochs it updates the lr
+
+    # dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, task=task)
+    # print(
+    #     f"Before Training, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
+    # )
 
     best_loss = 100000
     best_weights = None
     dev_loss_results = []
     dev_acc_results = []
     dev_acc_no_o_results = []
+
     for j in range(epochs):
-        model.train()
         train_loader = DataLoader(
             input_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=4
         )
@@ -111,13 +118,15 @@ def train_model(
             x, y = data
             optimizer.zero_grad(set_to_none=True)
             y_hat = model.forward(x)
-            y_hat = dropout(y_hat)
             loss = F.cross_entropy(y_hat, y)
             loss.backward()
-            train_loss += loss.item()
             optimizer.step()
+            train_loss += loss.item()
+
         # Evaluate model on dev at the end of each epoch.
-        dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, task=task)
+        dev_loss, dev_acc, dev_acc_clean = test_model(
+            model=model, task=task, labels_to_idx=labels_to_idx, input_data=dev_data
+        )
 
         # Save best model
         if dev_loss < best_loss:
@@ -126,24 +135,26 @@ def train_model(
 
         if task == "ner":
             print(
-                f"Epoch {j+1}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
+                f"Epoch {j + 1}/{epochs}, Loss: {train_loss / i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
             )
         else:
             print(
-                f"Epoch {j+1}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc}"
+                f"Epoch {j + 1}/{epochs}, Loss: {train_loss / i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc}"
             )
-        sched.step()
+
+        # sched.step()
         dev_loss_results.append(dev_loss)
         dev_acc_results.append(dev_acc)
         dev_acc_no_o_results.append(dev_acc_clean)
+
     # load best weights
     model.load_state_dict(best_weights)
-    filename = os.path.basename(__file__)[0].split(".")[0]
+    filename = os.path.basename(__file__).split(".")[0]
     torch.save(model, f"{filename}_best_model_{task}.pth")
     return dev_loss_results, dev_acc_results, dev_acc_no_o_results
 
 
-def test_model(model, input_data, task):
+def test_model(model, input_data, task, labels_to_idx):
     """
     This function tests a PyTorch model on given input data and returns the validation loss, overall accuracy, and
     accuracy excluding "O" labels. It takes in the following parameters:
@@ -156,39 +167,46 @@ def test_model(model, input_data, task):
     excluding "O" labels. These values are returned as a tuple.
     """
 
-    BATCH_SIZE = 256
+    BATCH_SIZE = 1024
     global idx_to_label
 
-    loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+    loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True)
     running_val_loss = 0
+
     with torch.no_grad():
         model.eval()
         count = 0
         count_no_o = 0
         to_remove = 0
+
         for k, data in enumerate(loader, 0):
             x, y = data
             y_hat = model.forward(x)
-            # y_hat = dropout(y_hat)
             val_loss = F.cross_entropy(y_hat, y)
-            # Create a list of predicted labels and actual labels
-            count += sum(y_hat.argmax(dim=1) == y).item()
-            running_val_loss += val_loss.item()
+
+            y_hat_labels = [i.item() for i in y_hat.argmax(dim=1)]
+            y_labels = [i.item() for i in y]
+
             if task == "ner":
-                y_hat_labels = [idx_to_label[i.item()] for i in y_hat.argmax(dim=1)]
-                y_labels = [idx_to_label[i.item()] for i in y]
                 # Count the number of correct labels th
                 y_agreed = sum(
                     [
-                        1 if (i == j and j != "O") else 0
+                        1 if (i == j and j != labels_to_idx["O"]) else 0
                         for i, j in zip(y_hat_labels, y_labels)
                     ]
                 )
-                count_no_o += y_agreed
-                to_remove += y_labels.count("O")
             else:
-                count_no_o = count
-                to_remove = 0
+                y_agreed = sum(
+                    [1 if (i == j) else 0 for i, j in zip(y_hat_labels, y_labels)]
+                )
+
+            count += sum(y_hat.argmax(dim=1) == y).item()
+            count_no_o += y_agreed
+
+            if task == "ner":
+                to_remove += y_labels.count(labels_to_idx["O"])
+
+            running_val_loss += val_loss.item()
 
     return (
         running_val_loss / k,
@@ -197,7 +215,7 @@ def test_model(model, input_data, task):
     )
 
 
-def run_inference(model, input_data, task, original_words):
+def run_inference(model, input_data, task, original_tokens):
     """
     This function tests a PyTorch model on given input data and returns the validation loss, overall accuracy, and
     accuracy excluding "O" labels. It takes in the following parameters:
@@ -216,35 +234,25 @@ def run_inference(model, input_data, task, original_words):
 
     loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
     predictions = []
+
     with torch.no_grad():
         model.eval()
-        for k, data in enumerate(loader, 0):
+
+        j = 0
+        for _, data in enumerate(loader, 0):
             x, y = data
             y_hat = model.forward(x)
-            x_tokens = [original_words[i + BATCH_SIZE * k] for i, _ in enumerate(x)]
+            y_hat = model.softmax(y_hat)
+            x_words = [original_tokens[i + j] for i, _ in enumerate(x)]
             y_hat_labels = [idx_to_label[i.item()] for i in y_hat.argmax(dim=1)]
-            predictions.extend(zip(x_tokens, y_hat_labels))
+            predictions.extend(zip(x_words, y_hat_labels))
+            j += BATCH_SIZE
 
     # find which tagger we are using
     tagger_idx = re.findall(r"\d+", os.path.basename(__file__))[0]
     with open(f"test{tagger_idx}.{task}", "w") as f:
         for pred in predictions:
             f.write(f"{pred[0]} {pred[1]}" + "\n")
-
-
-def replace_rare(dataset, threshold=1):
-    from collections import Counter
-
-    # Count the frequency of each word
-    word_counts = Counter(dataset)
-
-    # Find the set of rare words (words that occur less than the threshold)
-    rare_words = set(word for word in word_counts if word_counts[word] < threshold)
-
-    # Print the rare words
-    # print(rare_words)
-    updated = [word if word not in rare_words else "UUUNKKK" for word in dataset]
-    return updated
 
 
 def read_data(
@@ -274,222 +282,182 @@ def read_data(
     global idx_to_label
     global idx_to_word
 
-    if task == "ner":
-        SEPARATOR = "\t"
-    else:
-        SEPARATOR = " "
+    SEPARATOR = "\t" if task == "ner" else " "
 
+    all_tokens = []
+    all_labels = []
+
+    # the sentences always remain the same, regardless of the method used: an index for each word.
     with open(fname) as f:
         lines = f.readlines()
-        # lines = [line.strip() for line in lines if line.strip()]
         tokens = []
         labels = []
         sentences = []
+
         for line in lines:
             if line == "\n":
-                sentences.append((tokens, labels))
+                sentences.append((np.array(tokens), np.array(labels)))
                 tokens = []
                 labels = []
                 continue
+
             if type != "test":
                 token, label = line.split(SEPARATOR)
+                if type == "dev":
+                    token = token.strip()
+                else:
+                    token = token.strip()
+                label = label.strip()
+                all_labels.append(label)
             else:
                 token = line.strip()
                 label = ""
+
             if any(char.isdigit() for char in token) and label == "O":
-                token = "NNNUMMM"
+                token = "NUM"
+            all_tokens.append(token)
             tokens.append(token)
             labels.append(label)
-    # Preprocess data
-    if type != "test":
-        sentences = sentences[1:]  # remove docstart
-    all_tokens = []
-    all_labels = []
-    for sentence in sentences:
-        tokens, labels = sentence
-        for i in range(len(tokens)):
-            tokens[i] = tokens[i].strip().lower()
-            labels[i] = labels[i].strip()
 
-        all_tokens.extend(tokens)
-        all_labels.extend(labels)
-        tokens = np.array(tokens)
-        labels = np.array(labels)
-        sentence[0].clear()
-        sentence[0].extend(tokens)
-        sentence[1].clear()
-        sentence[1].extend(labels)
-    # TODO Best accuracy with this for threshold 2: ~0.835, without it 0.86+, when reducing to 1, ~0.868
-    # all_tokens = replace_rare(all_tokens)
+    # if in train case
     if not vocab:
-        vocab = set(all_tokens)  # build a vocabulary of unique tokens
-        vocab.add("<PAD>")  # add a padding token
+        vocab = set(all_tokens)
+        vocab.add("PAD")  # add a padding token
         vocab.add("UUUNKKK")  # add an unknown token
+
+    # if in train case
     if not labels_vocab:
         labels_vocab = set(all_labels)
 
-    # Map words to their corresponding index in the vocabulary (word:idx)
-    word_to_idx = {word: i for i, word in enumerate(vocab)}
-    labels_to_idx = {word: i for i, word in enumerate(labels_vocab)}
+    tokens_to_idx = {token: i for i, token in enumerate(vocab)}
+    labels_to_idx = {label: i for i, label in enumerate(labels_vocab)}
 
-    if type != "test":
-        idx_to_label = {i: label for label, i in labels_to_idx.items()}
-    idx_to_word = {i: word for word, i in word_to_idx.items()}
-
-    # Create windows, each window will be of size window_size, padded with -1
-    # for token of index i, w_i the window is: ([w_i-2,w_i-1 i, w_i+1,w_i+2],label of w_i)
+    labels_idx = [labels_to_idx[label] for label in all_labels]
+    idx_to_label = {i: label for i, label in enumerate(labels_vocab)}
+    idx_to_word = {i: word for word, i in tokens_to_idx.items()}
     windows = []
-    windows_dict = {}
-    tokens_idx_all = []
-    labels_idx_all = []
-    og_tokens = []
+
     for sentence in sentences:
         tokens, labels = sentence
-        og_tokens.extend(tokens)
-        # map tokens to their index in the vocabulary
-        tokens_idx = [
-            word_to_idx[word] if word in word_to_idx else word_to_idx["UUUNKKK"]
-            for word in tokens
-        ]
-        tokens_idx_all.extend(tokens_idx)
-        if type != "test":
-            labels_idx = [
-                labels_to_idx[label] if label in labels_to_idx else labels_to_idx["O"]
-                for label in labels
+        for i in range(len(tokens)):
+            window = []
+            if i < window_size:
+                for _ in range(window_size - i):
+                    window.append(tokens_to_idx["PAD"])
+            extra_words = tokens[
+                max(0, i - window_size) : min(len(tokens), i + window_size + 1)
             ]
-            labels_idx_all.extend(labels_idx)
-
-        for i in range(len(tokens_idx)):
-            start = max(0, i - window_size)
-            end = min(len(tokens_idx), i + window_size + 1)
-            context = (
-                [word_to_idx["<PAD>"]] * (window_size - i + start)
-                + tokens_idx[start:i]
-                + tokens_idx[i:end]
-                + [word_to_idx["<PAD>"]] * (window_size - end + i + 1)
+            window.extend(
+                [
+                    tokens_to_idx[token]
+                    if token in tokens_to_idx.keys()
+                    else tokens_to_idx["UUUNKKK"]
+                    for token in extra_words
+                ]
             )
-            # label = labels_idx[i]
-            label = ""
-            windows.append((context, label))
-            # windows_dict[i] = (context, label)
-    # TODO maybe we don't need to calculate it and return it ?
-    tokens_idx = torch.tensor(tokens_idx_all)
-    if type != "test":
-        labels_idx = torch.tensor(labels_idx_all)
-    else:
-        labels_idx = torch.tensor(
-            [0] * len(tokens_idx_all)
-        )  # fake labels for compatibility
-    return tokens_idx, labels_idx, windows, vocab, labels_vocab, windows_dict, og_tokens
+
+            if i > len(tokens) - window_size - 1:
+                for _ in range(i - (len(tokens) - window_size - 1)):
+                    window.append(tokens_to_idx["PAD"])
+
+            windows.append(window)
+
+    return (
+        torch.tensor(labels_idx),
+        torch.tensor(windows),
+        vocab,
+        labels_vocab,
+        labels_to_idx,
+        all_tokens,
+    )
 
 
-def plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task):
-    # # Plot the dev loss, and save
-    tagger_name = os.path.basename(__file__).split(".")[0]
-    plt.plot(dev_loss, label="dev loss")
-    plt.title(f"{task} task")
-    plt.savefig(f"loss_{task}_{tagger_name}.png")
-    # plt.show()
-    #
-    # # Plot the dev accuracy, and save
-    plt.plot(dev_accuracy, label="dev accuracy")
-    plt.title(f"{task} task")
-    plt.savefig(f"accuracy_{task}_{tagger_name}.png")
-    # plt.show()
-    #
-    # # Plot the dev accuracy no O, and save
-    plt.plot(dev_accuracy_no_o, label="dev accuracy no o")
-    plt.title(f"{task} task")
-    plt.savefig(f"accuracy_no_O_{task}_{tagger_name}.png")
-    # plt.show()
+def plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task, tagger_name=None):
+    # Plot the dev loss, and save
+    if not tagger_name: tagger_name = os.path.basename(__file__).split(".")[0]
+    plt.plot(range(1, len(dev_loss) + 1), dev_loss, label="dev loss")
+    plt.xticks(range(1, len(dev_loss) + 1))
+    plt.title(f"dev loss {task}")
+    plt.savefig(f"./images/loss_{task}_{tagger_name}.png")
+    plt.clf()
+
+    # Plot the dev accuracy, and save
+    plt.plot(range(1, len(dev_accuracy) + 1), dev_accuracy, label="dev accuracy")
+    plt.xticks(range(1, len(dev_accuracy) + 1))
+    plt.title(f"dev accuracy {task}")
+    plt.savefig(f"./images/accuracy_{task}_{tagger_name}.png")
+    plt.clf()
+
+    # Plot the dev accuracy no O, and save
+    plt.plot(
+        range(1, len(dev_accuracy_no_o) + 1),
+        dev_accuracy_no_o,
+        label="dev accuracy no o",
+    )
+    plt.xticks(range(1, len(dev_accuracy_no_o) + 1))
+    plt.title(f"dev accuracy no 'O' {task}")
+    plt.savefig(f"./images/accuracy_no_O_{task}_{tagger_name}.png")
+    plt.clf()
 
 
 def main(task="ner"):
-    (
-        tokens_idx,
-        labels_idx,
-        windows,
-        vocab,
-        labels_vocab,
-        windows_dict,
-        og_tokens,
-    ) = read_data(f"./{task}/train", task=task)
-    # create an empty embedding matrix, each vector is size 50
-    embedding_matrix = nn.Embedding(len(vocab), 50, _freeze=False)
-    embedding_matrix.weight.requires_grad = True
+    labels_idx, windows, vocab, labels_vocab, labels_to_idx, _ = read_data(
+        fname=f"./{task}/train", task=task, type="train"
+    )
 
-    # initialize the embedding matrix to random values using xavier initialization which is a good initialization for NLP tasks
+    labels_idx_dev, windows_dev, _, _, _, _ = read_data(
+        vocab=vocab,
+        labels_vocab=labels_vocab,
+        fname=f"./{task}/dev",
+        task=task,
+        type="dev",
+    )
+
+    # initialize model and embedding matrix and dataset
+    embedding_matrix = nn.Embedding(len(vocab), 50)
     nn.init.xavier_uniform_(embedding_matrix.weight)
 
-    model = Tagger(task, vocab, labels_vocab, embedding_matrix)
+    model = Tagger(vocab, labels_vocab, embedding_matrix)
 
-    # Make a new tensor out of the windows, so the tokens are windows of size window_size in the dataset
-    token_idx_new = torch.tensor([window for window, label in windows])
+    # the windows were generated according to the new pretrained vocab (plus missing from train) if we use pretrained.
+    dataset = TensorDataset(windows, labels_idx)
+    dev_dataset = TensorDataset(windows_dev, labels_idx_dev)
 
-    dataset = TensorDataset(token_idx_new, labels_idx)
+    lr_dict = {"ner": 0.0007, "pos": 0.0001}
+    epoch_dict = {"ner": 5, "pos": 8}
 
-    # Load the dev data
-    (
-        tokens_idx_dev,
-        labels_idx_dev,
-        windows_dev,
-        vocab,
-        labels_vocab,
-        windows_dict,
-        og_tokens,
-    ) = read_data(f"./{task}/dev", task=task, vocab=vocab, labels_vocab=labels_vocab)
-
-    token_idx_dev_new = torch.tensor([window for window, label in windows_dev])
-    dev_dataset = TensorDataset(token_idx_dev_new, labels_idx_dev)
-    # Get the dev loss from the model training
+    # train model
     dev_loss, dev_accuracy, dev_accuracy_no_o = train_model(
         model,
         input_data=dataset,
         dev_data=dev_dataset,
-        epochs=1,
-        lr=0.005,
+        epochs=epoch_dict[task],
+        lr=lr_dict[task],
+        labels_to_idx=labels_to_idx,
         task=task,
     )
 
+    # plot the results
     plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task)
 
     print("Test")
-    (
-        tokens_idx_test,
-        labels_idx_test,
-        windows_test,
-        vocab_test,
-        labels_vocab_test,
-        windows_dict_test,
-        og_tokens,
-    ) = read_data(f"./{task}/test", type="test", vocab=vocab, labels_vocab=labels_vocab)
-
-    token_idx_test_new = torch.tensor([window for window, label in windows_test])
-    test_dataset = TensorDataset(token_idx_test_new, labels_idx_test)
-    print()
-    print("Test")
-
-    # test_data
-    # dev_loss, dev_acc, dev_acc_clean = test_model(
-    #     model, test_dataset, windows, task="ner"
-    # )
-    run_inference(model, test_dataset, task, og_tokens)
-
-    # print(f"Test Loss: {dev_loss}, Test Acc: {dev_acc} Acc No O:{dev_acc_clean}")
-    dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_dataset, windows, task="ner")
-
-    print(
-        f"Test Loss: {dev_loss}, Test Acc: {dev_acc} Acc No O:{dev_acc_clean}"
-    )
-    tokens_idx_test, labels_idx_test, windows_test, vocab_test, labels_vocab_test, windows_dict_test = read_data(
-        "./ner/test", type="test"
+    _, windows_test, _, _, _, original_tokens = read_data(
+        fname=f"./{task}/test",
+        vocab=vocab,
+        labels_vocab=labels_vocab,
+        type="test",
+        task=task,
     )
 
-    # tokens_idx, labels_idx, windows, vocab, labels_vocab = read_data("./ner/test")
+    test_dataset = TensorDataset(windows_test, torch.tensor([0] * len(windows_test)))
 
+    run_inference(
+        model=model, input_data=test_dataset, task=task, original_tokens=original_tokens
+    )
 
 
 if __name__ == "__main__":
     tasks = ["ner", "pos"]
     for task in tasks:
+        print(task)
         main(task)

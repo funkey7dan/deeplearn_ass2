@@ -323,10 +323,7 @@ def read_data(
     global idx_to_label
     global idx_to_word
     data = []
-    if task == "ner":
-        SEPARATOR = "\t"
-    else:
-        SEPARATOR = " "
+SEPARATOR = "\t" if task == "ner" else " "
 
     with open(fname) as f:
         lines = f.readlines()

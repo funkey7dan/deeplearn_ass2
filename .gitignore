@@ -3,3 +3,5 @@ ass2.pdf
 *.pyc
 *.png
 *.pt
+*.pth
+.vscode/

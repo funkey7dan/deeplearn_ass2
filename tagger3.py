@@ -1,80 +1,61 @@
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 from torch.utils.data import DataLoader, TensorDataset
-import matplotlib.pyplot as plt
 import re
+import os
+from tagger1 import plot_results
+
 
 idx_to_label = {}
 idx_to_word = {}
-idx_to_suffix = {}
-idx_to_prefix = {}
 
 
 class Tagger(nn.Module):
-    # TODO clean this description
-    """
-    A sequence tagger,where
-    the input is a sequence of items(in our case, a sentence of natural-language words),
-    and an output is a label for each of the item.
-    The tagger will be greedy/local and window-based. For a sequence of words
-    w1,...,wn, the tag of word wi will be based on the words in a window of
-    two words to each side of the word being tagged: wi-2,wi-1,wi,wi+1,wi+2.
-    'Greedy/local' here means that the tag assignment for word i will not depend on the tags of other words
-    each word in the window will be assigned a 50 dimensional embedding vector, using an embedding matrix E.
-    MLP with one hidden layer and tanh activation function.
-    The output of the MLP will be passed through a softmax transformation, resulting in a probability distribution.
-    The network will be trained with a cross-entropy loss.
-    The vocabulary of E will be based on the words in the training set (you are not allowed to add to E words that appear only in the dev set).
-    """
-
     def __init__(
         self,
-        task,
         vocab,
         labels_vocab,
         embedding_matrix,
-        embedding_matrix_prefixes,
-        embedding_matrix_suffixes,
+        pref_embedding_matrix,
+        suf_embedding_matrix,
     ):
         """
-        Initializes a Tagger object.
+        Initializes the Tagger model.
 
-        Args:
-            task (str): The task to perform with the model (e.g., "ner" or "pos").
-            vocab (set): The vocabulary object for the input data.
-            labels_vocab (set): The vocabulary object for the output labels.
-            embedding_matrix (torch.nn.Embedding): The matrix of pre-trained embeddings.
-        Returns:
-            None
+        :param vocab: Vocabulary
+        :param labels_vocab: Vocabulary for the labels
+        :param embedding_matrix: Embedding matrix for the words
+        :param pref_embedding_matrix: Embedding matrix for the prefixes
+        :param suf_embedding_matrix: Embedding matrix for the suffixes
+        :return: None
         """
-
         super(Tagger, self).__init__()
         self.vocab = vocab
-        self.labels_vocab = labels_vocab
-        self.task = task
-        output_size = len(labels_vocab)  # TODO check if it works for us
-        hidden_size = 150
         window_size = 5
-        input_size = (
-            embedding_matrix.embedding_dim * window_size
-        )  # 5 concat. 50 dimensional embedding vectors, output over labels
+
+        # 5 concat. 50 dimensional embedding vectors, output over labels
+        input_size = embedding_matrix.embedding_dim * window_size
+        hidden_size = 500
+        output_size = len(labels_vocab)
+
         self.in_linear = nn.Linear(input_size, hidden_size)
         self.out_linear = nn.Linear(hidden_size, output_size)
-        # self.softmax = nn.Softmax()
         self.embedding_matrix = embedding_matrix
-        self.embedding_matrix_prefixes = embedding_matrix_prefixes
-        self.embedding_matrix_suffixes = embedding_matrix_suffixes
-        self.activate = nn.Tanh()
+        self.pref_embedding_matrix = pref_embedding_matrix
+        self.suf_embedding_matrix = suf_embedding_matrix
+        self.tanh = nn.Tanh()
+        self.softmax = nn.Softmax(dim=1)
+        self.dropout = nn.Dropout(p=0.5)
 
-    def forward(self, x, pref, suf):
+    def forward(self, x):
         """
         Forward pass of the tagger.
-        Expects x of shape (batch_size, window total size), which means 32 windows for example.
+        Expects x of shape (batch_size, window total size), which means 32 windows of 5 for example.
 
         Args:
-            x: A tensor of shape (batch_size, seq_len) of word indices.
+            x: A tensor of shape (batch_size, window total size) of word indices.
 
         Returns:
             A tensor of shape (batch_size, output_dim).
@@ -83,113 +64,152 @@ class Tagger(nn.Module):
         # x.shape[1] is the size of window, which is 5 in our case.
         # self.embedding_matrix(x[:,i]) is the 32 x 50 embedding matrix of the i'th items in the window.
         # torch.cat concatenates the 5 32 x 50 embedding matrix of the i'th items in the window to a 32 x 250 matrix, which we can pass to the linear layer.
-        # x = torch.cat(
-        #     [self.embedding_matrix(x[:, i]) for i in range(x.shape[1])], dim=1
-        # )
-        x = self.embedding_matrix(x).view(
-            -1, 250
-        )  # Faster than the above and equivalent
-        prefixes = self.embedding_matrix_prefixes(pref).view(-1, 250)
-        suffixes = self.embedding_matrix_suffixes(suf).view(-1, 250)
-        x = x + prefixes + suffixes
+        pref_x, word_x, suf_x = x[:, :, 0], x[:, :, 1], x[:, :, 2]
+        x = (
+            self.pref_embedding_matrix(pref_x).view(-1, 250)
+            + self.embedding_matrix(word_x).view(-1, 250)
+            + self.suf_embedding_matrix(suf_x).view(-1, 250)
+        )
+
         x = self.in_linear(x)
-        x = self.activate(x)
+        x = self.tanh(x)
+        x = self.dropout(x)
         x = self.out_linear(x)
-        # x = self.softmax(x) #TODO: we are using cross-entropy loss therefore we maybe don't need softmax
         return x
 
 
-def train_model(model, input_data, dev_data, windows, epochs=1, lr=0.01):
+def train_model(
+    model,
+    input_data,
+    dev_data,
+    labels_to_idx,
+    epochs=1,
+    lr=0.0001,
+    task="ner",
+):
     """
-    Trains a given model using the provided input and development data.
-    Args:
-            model: The model to train.
-            input_data: The training data.
-            dev_data: The development data to evaluate the model.
-            windows: The size of the windows to use.
-            epochs: The number of epochs to train the model for. Default value is 1.
-            lr: The learning rate to use. Default value is 0.01.
-    Returns:
-            A list of the accuracy of the model on the development data at the end of each epoch.
+    Train a given PyTorch `model` on `input_data` and evaluate on `dev_data` for `epochs` number of epochs.
+    Returns the `dev_loss_results`, `dev_acc_results`, and `dev_acc_no_o_results`.
+    `labels_to_idx` is a dictionary mapping labels to indices.
+    `lr` is the learning rate for the optimizer.
+    `task` is a string indicating the type of task being performed, either "ner" or something else.
     """
-
     global idx_to_label
-    BATCH_SIZE = 256
-    # optimizer = torch.optim.SGD(model.parameters(), lr)  # TODO: maybe change to Adam
+    BATCH_SIZE = 1024
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
-    dropout = nn.Dropout(p=0.5)
-    dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data)
-    print(
-        f"Before Training, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
-    )
+    model.train()
 
-    results = []
+    sched = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=3, gamma=0.1
+    )  # scheduler that every 3 epochs it updates the lr
+
+    best_loss = 100000
+    best_weights = None
+    dev_loss_results = []
+    dev_acc_results = []
+    dev_acc_no_o_results = []
+
     for j in range(epochs):
-        model.train()
-        train_loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True)
+        train_loader = DataLoader(
+            input_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=4
+        )
         train_loss = 0
         for i, data in enumerate(train_loader, 0):
-            x, pref, suf, y = data
+            x, y = data
             optimizer.zero_grad(set_to_none=True)
-            y_hat = model.forward(x, pref, suf)
-            y_hat = dropout(y_hat)
+            y_hat = model.forward(x)
             loss = F.cross_entropy(y_hat, y)
             loss.backward()
-            train_loss += loss.item()
             optimizer.step()
-        # Evalaute model on dev at the end of each epoch.
-        dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data)
-        print(
-            f"Epoch {j}/{epochs}, Loss: {train_loss/i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
+            train_loss += loss.item()
+
+        # Evaluate model on dev at the end of each epoch.
+        dev_loss, dev_acc, dev_acc_clean = test_model(
+            model=model, task=task, labels_to_idx=labels_to_idx, input_data=dev_data
         )
+
+        # Save best model
+        if dev_loss < best_loss:
+            best_loss = dev_loss
+            best_weights = model.state_dict()
+
+        if task == "ner":
+            print(
+                f"Epoch {j + 1}/{epochs}, Loss: {train_loss / i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
+            )
+        else:
+            print(
+                f"Epoch {j + 1}/{epochs}, Loss: {train_loss / i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc}"
+            )
+
         sched.step()
-        results.append(dev_loss)
-    return results
+        dev_loss_results.append(dev_loss)
+        dev_acc_results.append(dev_acc)
+        dev_acc_no_o_results.append(dev_acc_clean)
+
+    # load best weights
+    model.load_state_dict(best_weights)
+    filename = os.path.basename(__file__).split(".")[0]
+    torch.save(model, f"{filename}_best_model_{task}.pth")
+    return dev_loss_results, dev_acc_results, dev_acc_no_o_results
 
 
-def test_model(model, input_data):
+def test_model(model, input_data, task, labels_to_idx):
     """
-    This function tests a PyTorch model on given input data and returns the validation loss, overall accuracy, and
-    accuracy excluding "O" labels. It takes in the following parameters:
+    Calculates the validation loss, accuracy, and accuracy excluding 'O' labels for the given PyTorch model, input data,
+    task, and label dictionary.
 
-    - model: a PyTorch model to be tested
-    - input_data: a dataset to test the model on
-    - windows: a parameter that is not used in the function
+    :param model: PyTorch model to evaluate
+    :type model: torch.nn.Module
+    :param input_data: input data for the model
+    :type input_data: torch.utils.data.Dataset
+    :param task: task to evaluate the model on ("ner" or "pos")
+    :type task: str
+    :param labels_to_idx: dictionary mapping label names to their corresponding indices
+    :type labels_to_idx: dict
+    :return: tuple containing the validation loss, overall accuracy, and accuracy excluding 'O' labels
+    :rtype: tuple(float, float, float)
 
-    The function first initializes a batch size of 32 and a global variable idx_to_label. It then creates a DataLoader
-    object with the input_data and the batch size, and calculates the validation loss, overall accuracy, and accuracy
-    excluding "O" labels. These values are returned as a tuple.
     """
-
-    BATCH_SIZE = 256
+    BATCH_SIZE = 1024
     global idx_to_label
 
     loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=True)
     running_val_loss = 0
+
     with torch.no_grad():
         model.eval()
         count = 0
         count_no_o = 0
         to_remove = 0
+
         for k, data in enumerate(loader, 0):
-            x, pref, suf, y = data
-            y_hat = model.forward(x, pref, suf)
-            # y_hat = dropout(y_hat)
+            x, y = data
+            y_hat = model.forward(x)
             val_loss = F.cross_entropy(y_hat, y)
-            # Create a list of predicted labels and actual labels
-            y_hat_labels = [idx_to_label[i.item()] for i in y_hat.argmax(dim=1)]
-            y_labels = [idx_to_label[i.item()] for i in y]
-            # Count the number of correct labels th
-            y_agreed = sum(
-                [
-                    1 if (i == j and j != "O") else 0
-                    for i, j in zip(y_hat_labels, y_labels)
-                ]
-            )
+
+            y_hat_labels = [i.item() for i in y_hat.argmax(dim=1)]
+            y_labels = [i.item() for i in y]
+
+            if task == "ner":
+                # Count the number of correct labels th
+                y_agreed = sum(
+                    [
+                        1 if (i == j and j != labels_to_idx["O"]) else 0
+                        for i, j in zip(y_hat_labels, y_labels)
+                    ]
+                )
+            else:
+                y_agreed = sum(
+                    [1 if (i == j) else 0 for i, j in zip(y_hat_labels, y_labels)]
+                )
+
             count += sum(y_hat.argmax(dim=1) == y).item()
             count_no_o += y_agreed
-            to_remove += y_labels.count("O")
+
+            if task == "ner":
+                to_remove += y_labels.count(labels_to_idx["O"])
+
             running_val_loss += val_loss.item()
 
     return (
@@ -199,334 +219,462 @@ def test_model(model, input_data):
     )
 
 
-def replace_rare(dataset, threshold=1):
-    from collections import Counter
-
-    # Count the frequency of each word
-    word_counts = Counter(dataset)
-
-    # Find the set of rare words (words that occur less than the threshold)
-    rare_words = set(word for word in word_counts if word_counts[word] < threshold)
-
-    # Print the rare words
-    # print(rare_words)
-    updated = [word if word not in rare_words else "UUUNKKK" for word in dataset]
-    return updated
-
-
-dg_pattern = re.compile(r"^[.+-]?(DG\.?)+$")
-
-
-def check_dg_pattern(s):
-    # Replace all digits with "DG"
-    s = re.sub(r"\d+", "DG", s)
-    # Check if the resulting string matches the pattern
-    if dg_pattern.match(s) is not None:
-        return s
-    return None
-
-
-def check_if_a_number(word, vocab):
-    s = check_dg_pattern(word)
-    if s is not None and s in vocab:
-        return s
-    elif all(ch.isdigit() or ch == "," for ch in word) and any(
-        ch.isdigit() for ch in word
-    ):
-        return "NNNUMMM"
-    return None
-
-
-def read_data(
-    fname, window_size=2, vocab=None, labels_vocab=None, type="train", task=None
-):
+def run_inference(model, input_data, task, original_tokens):
     """
-    Reads in data from a file and preprocesses it for use in a neural network model.
+    Run inference on a given model with input data and save the output to a file.
 
-    Args:
-        fname (str): The name of the file to read data from.
-        window_size (int, optional): The size of the context window to use when creating windows. Defaults to 2.
-        vocab (set, optional): A set of unique tokens to use as the vocabulary. If not provided, a vocabulary will be built from the data. Defaults to None.
-        labels_vocab (set, optional): A set of unique labels to use for classification. If not provided, labels will be inferred from the data. Defaults to None.
-        type (str, optional): A string indicating the type of data being read. Defaults to "train".
-
-    Returns:
-        tuple: A tuple containing the preprocessed data:
-            - tokens_idx (torch.Tensor): A tensor of indices representing the tokens in the data.
-            - labels_idx (torch.Tensor): A tensor of indices representing the labels in the data.
-            - windows (list): A list of tuples representing the context windows and labels for each token in the data.
-            - vocab (set): A set of unique tokens used as the vocabulary.
-            - labels_vocab (set): A set of unique labels used for classification.
-            - windows_dict (dict): A dictionary mapping token indices to their corresponding context windows and labels.
-            - task (str): The task to perform.
+    :param model: a PyTorch model object.
+    :param input_data: a list of tuples with input data and labels.
+    :param task: a string representing the task being performed, e.g. 'ner'.
+    :param original_tokens: a list of words corresponding to the input data.
     """
 
-    global idx_to_label
-    global idx_to_word
-    global idx_to_prefix
-    global idx_to_suffix
+    BATCH_SIZE = 256
+    global idx_to_label, idx_to_word
 
-    if task == "ner":
-        SEPARATOR = "\t"
-    else:
-        SEPARATOR = " "
+    loader = DataLoader(input_data, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+    predictions = []
 
-    with open(fname) as f:
-        lines = f.readlines()
-        # lines = [line.strip() for line in lines if line.strip()]
-        tokens = []
-        labels = []
-        sentences = []
-        for line in lines:
-            if line == "\n":
-                sentences.append((tokens, labels))
-                tokens = []
-                labels = []
-                continue
-            if type != "test":
-                token, label = line.split(SEPARATOR)
-            else:
-                token = line.strip()
-                label = ""
-            # if any(char.isdigit() for char in token) and label == "O":
-            #     token = "NNNUMMM"
-            # Replace all digits with "DG" patterns as in the vocabulary
-            if any(char.isdigit() for char in token):
-                t = check_if_a_number(token, vocab)
-                if t is not None:
-                    token = t
-            tokens.append(token)
-            labels.append(label)
-    # Preprocess data
-    sentences = sentences[1:]  # remove docstart
-    all_tokens = []
-    all_labels = []
-    for sentence in sentences:
-        tokens, labels = sentence
-        for i in range(len(tokens)):
-            tokens[i] = tokens[i].strip().lower()
-            labels[i] = labels[i].strip()
+    with torch.no_grad():
+        model.eval()
 
-        all_tokens.extend(tokens)
-        all_labels.extend(labels)
-        tokens = np.array(tokens)
-        labels = np.array(labels)
-        sentence[0].clear()
-        sentence[0].extend(tokens)
-        sentence[1].clear()
-        sentence[1].extend(labels)
-    tokens = replace_rare(tokens)
-    all_tokens.extend(["<PAD>", "UUUNKKK"])
-    if not vocab:
-        # all_tokens.extend(["<PAD>","UUUNKKK"])
-        vocab = set(all_tokens)  # build a vocabulary of unique tokens
-    vocab.add("<PAD>")  # add a padding token
-    # vocab.add("UUUNKKK")  # add an unknown token
-    if not labels_vocab:
-        labels_vocab = set(all_labels)
+        j = 0
+        for _, data in enumerate(loader, 0):
+            x, y = data
+            y_hat = model.forward(x)
+            y_hat = model.softmax(y_hat)
+            x_words = [original_tokens[i + j] for i, _ in enumerate(x)]
+            y_hat_labels = [idx_to_label[i.item()] for i in y_hat.argmax(dim=1)]
+            predictions.extend(zip(x_words, y_hat_labels))
+            j += BATCH_SIZE
 
-    prefixes_vocab = set([word[:3] for word in all_tokens])
-    suffixes_vocab = set([word[-3:] for word in all_tokens])
-    prefix_to_idx = {word: i for i, word in enumerate(prefixes_vocab)}
-    suffixes_to_idx = {word: i for i, word in enumerate(suffixes_vocab)}
-
-    # Map words to their corresponding index in the vocabulary (word:idx)
-    word_to_idx = {word: i for i, word in enumerate(vocab)}
-
-    labels_to_idx = {word: i for i, word in enumerate(labels_vocab)}
-
-    idx_to_label = {i: label for label, i in labels_to_idx.items()}
-    idx_to_word = {i: word for word, i in word_to_idx.items()}
-    idx_to_prefix = {i: word for word, i in prefix_to_idx.items()}
-    idx_to_suffix = {i: word for word, i in suffixes_to_idx.items()}
-
-    # Create windows, each window will be of size window_size, padded with -1
-    # for token of index i, w_i the window is: ([w_i-2,w_i-1 i, w_i+1,w_i+2],label of w_i)
-    # TODO: add prefix and suffix in this manner:
-    # assign an embedding vector to each prefix of 3 letters and each
-    # suffix of 3 letters (among the prefixes and suffixes that were observed in the
-    # corpus). Then, you can represent each word as a sum of the word vector, the
-    # prefix vector and the suffix vector.
-    windows = []
-    prefix_windows = []
-    suffix_windows = []
-    windows_dict = {}
-    tokens_idx_all = []
-    labels_idx_all = []
-    prefix_idx_all = []
-    suffix_idx_all = []
-
-    for sentence in sentences:
-        tokens, labels = sentence
-
-        # map tokens to their index in the vocabulary
-        tokens_idx = [
-            word_to_idx[word] if word in word_to_idx else word_to_idx["UUUNKKK"]
-            for word in tokens
-        ]
-        prefix_idx = [
-            prefix_to_idx[word[:3]]
-            if word[:3] in prefix_to_idx
-            else prefix_to_idx["UUUNKKK"]
-            for word in tokens
-        ]
-        suffix_idx = [
-            suffixes_to_idx[word[-3:]]
-            if word[-3:] in suffixes_to_idx
-            else suffixes_to_idx["UUUNKKK"]
-            for word in tokens
-        ]
-        prefix_idx_all.extend(prefix_idx)
-        suffix_idx_all.extend(suffix_idx)
-        tokens_idx_all.extend(tokens_idx)
-
-        labels_idx = [
-            labels_to_idx[label] if label in labels_to_idx else labels_to_idx["O"]
-            for label in labels
-        ]
-        labels_idx_all.extend(labels_idx)
-
-        for i in range(len(tokens_idx)):
-            start = max(0, i - window_size)
-            end = min(len(tokens_idx), i + window_size + 1)
-            context = (
-                [word_to_idx["<PAD>"]] * (window_size - i + start)
-                + tokens_idx[start:i]
-                + tokens_idx[i:end]
-                + [word_to_idx["<PAD>"]] * (window_size - end + i + 1)
-            )
-            prefix_context = (
-                [prefix_to_idx["<PA"]] * (window_size - i + start)
-                + prefix_idx[start:i]
-                + prefix_idx[i:end]
-                + [prefix_to_idx["<PA"]] * (window_size - end + i + 1)
-            )
-            suffix_context = (
-                [suffixes_to_idx["AD>"]] * (window_size - i + start)
-                + suffix_idx[start:i]
-                + suffix_idx[i:end]
-                + [suffixes_to_idx["AD>"]] * (window_size - end + i + 1)
-            )
-            label = labels_idx[i]
-            windows.append((context, label))
-            prefix_windows.append(prefix_context)
-            suffix_windows.append(suffix_context)
-            # windows_dict[i] = (context, label)
-
-    tokens_idx = torch.tensor(tokens_idx_all)
-    labels_idx = torch.tensor(labels_idx_all)
-    # suffix_idx = torch.tensor(suffix_idx_all)
-    # prefix_idx = torch.tensor(prefix_idx_all)
-
-    return (
-        tokens_idx,
-        labels_idx,
-        windows,
-        vocab,
-        labels_vocab,
-        windows_dict,
-        prefix_windows,
-        suffix_windows,
-        prefixes_vocab,
-        suffixes_vocab,
-    )
+    # find which tagger we are using
+    tagger_idx = re.findall(r"\d+", os.path.basename(__file__))[0]
+    with open(f"test{tagger_idx}.{task}", "w") as f:
+        for pred in predictions:
+            f.write(f"{pred[0]} {pred[1]}" + "\n")
 
 
-def load_embedding_matrix(embedding_path):
+def load_embedding_matrix():
     with open("vocab.txt", "r", encoding="utf-8") as file:
         vocab = file.readlines()
         vocab = [word.strip() for word in vocab]
-        vocab = set(vocab)
     vecs = np.loadtxt("wordVectors.txt")
     vecs = torch.from_numpy(vecs)
     vecs = vecs.float()
     return vocab, vecs
 
 
-def main(task="ner"):
-    _, vecs = load_embedding_matrix(f"./wordVectors.txt")
+def read_data(
+    fname,
+    embedding_vecs=None,
+    pref_vocab=None,
+    suf_vocab=None,
+    window_size=2,
+    vocab=None,
+    labels_vocab=None,
+    type="train",
+    task=None,
+    pretrained_vocab=None,
+):
+    """
+    Reads in a data file and returns a tuple containing all the necessary
+    information for processing. The function reads in a file and splits it into
+    sentences consisting of a sequence of tokens and their corresponding labels.
+    For a given token, a window around it is extracted, and the resulting
+    tuples consisting of a prefix word, the token, and a suffix word are used
+    to create a tensor. The resulting tensors are returned along with several
+    vocabularies and mappings.
+
+    :param fname: The name of the file to read.
+    :param embedding_vecs: Pretrained word embeddings.
+    :param pref_vocab: Vocabulary for prefix words.
+    :param suf_vocab: Vocabulary for suffix words.
+    :param window_size: Size of the window around each token.
+    :param vocab: Vocabulary of all tokens.
+    :param labels_vocab: Vocabulary of all labels.
+    :param type: The type of data being read (train, dev, or test).
+    :param task: The task being performed (ner, pos, or chunk).
+    :param pretrained_vocab: Vocabulary of pretrained embeddings.
+    :return: A tuple containing the labels as a tensor, the windows as a tensor,
+    the vocabulary of all tokens, the vocabulary of all labels, the mappings of
+    labels to indices, a list of all tokens, the pretrained embeddings, the
+    vocabulary of prefix words, and the vocabulary of suffix words.
+    """
+
+    global idx_to_label
+    global idx_to_word
+
+    SEPARATOR = "\t" if task == "ner" else " "
+
+    all_tokens = []
+    all_labels = []
+    all_pref_words = []
+    all_suf_words = []
+
+    # the sentences always remain the same, regardless of the method used: an index for each word.
+    with open(fname) as f:
+        lines = f.readlines()
+        tokens = []
+        labels = []
+        sentences = []
+
+        for line in lines:
+            if line == "\n":
+                sentences.append((np.array(tokens), np.array(labels)))
+                tokens = []
+                labels = []
+                continue
+
+            if type != "test":
+                token, label = line.split(SEPARATOR)
+                if type == "dev" and embedding_vecs is not None:
+                    token = token.strip().lower()
+                else:
+                    token = token.strip()
+                label = label.strip()
+                all_labels.append(label)
+            else:
+                token = line.strip()
+                label = ""
+
+            if any(char.isdigit() for char in token) and label == "O":
+                token = "NUM"
+            all_tokens.append(token)
+            all_pref_words.append(token[:3])
+            all_suf_words.append(token[-3:])
+
+            tokens.append(token)
+            labels.append(label)
+
+    # train case
+    if not vocab:
+        vocab = set(all_tokens)
+        vocab.add("PAD")  # add a padding token
+        vocab.add("UUUNKKK")  # add an unknown token
+
+        if embedding_vecs is not None:
+            all_pref_words.extend([word[:3] for word in pretrained_vocab])
+            all_suf_words.extend([word[-3:] for word in pretrained_vocab])
+            train_missing_embeddings = [
+                word for word in vocab if word not in pretrained_vocab
+            ]
+            for word in train_missing_embeddings:
+                size = embedding_vecs.shape[1]  # Get the size of the vector
+                vector = torch.empty(1, size)
+                nn.init.xavier_uniform_(vector)  # Apply Xavier uniform initialization
+                embedding_vecs = torch.cat(
+                    (embedding_vecs, vector), dim=0
+                )  # add as last row
+                pretrained_vocab.append(word)  # add as last word
+            # if we're using pretrained embeddings, the vocabulary changes. turning this into a set doesn't change
+            # the size, these are already unique words.
+            vocab = pretrained_vocab
+
+        pref_vocab = set(all_pref_words)
+        suf_vocab = set(all_suf_words)
+        pref_vocab.add("PAD")  # add a padding token
+        pref_vocab.add("UUUNKKK")  # add an unknown token
+        suf_vocab.add("PAD")  # add a padding token
+        suf_vocab.add("UUUNKKK")  # add an unknown token
+
+    # if in train case
+    if not labels_vocab:
+        labels_vocab = list(set(all_labels))
+        labels_vocab.sort()
+
+    tokens_to_idx = {token: i for i, token in enumerate(vocab)}
+    labels_to_idx = {label: i for i, label in enumerate(labels_vocab)}
+    pref_words_idx_dict = {pref_word: i for i, pref_word in enumerate(pref_vocab)}
+    suf_words_idx_dict = {suf_word: i for i, suf_word in enumerate(suf_vocab)}
+
+    labels_idx = [labels_to_idx[label] for label in all_labels]
+    idx_to_label = {i: label for i, label in enumerate(labels_vocab)}
+    idx_to_word = {i: word for word, i in tokens_to_idx.items()}
+    windows = []
+
+    for sentence in sentences:
+        tokens, labels = sentence
+        for i in range(len(tokens)):
+            window = []
+            if i < window_size:
+                for j in range(window_size - i):
+                    window.append(
+                        (
+                            pref_words_idx_dict["PAD"],
+                            tokens_to_idx["PAD"],
+                            suf_words_idx_dict["PAD"],
+                        )
+                    )
+            extra_words = tokens[
+                max(0, i - window_size) : min(len(tokens), i + window_size + 1)
+            ]
+            window_tuples = []
+            for word in extra_words:
+                pref_in_tuple, word_in_tuple, suf_in_tuple = (
+                    pref_words_idx_dict["UUUNKKK"],
+                    tokens_to_idx["UUUNKKK"],
+                    suf_words_idx_dict["UUUNKKK"],
+                )
+
+                if embedding_vecs is not None:
+                    if word.lower() in tokens_to_idx.keys():
+                        pref_in_tuple, word_in_tuple, suf_in_tuple = (
+                            pref_words_idx_dict[word[:3].lower()],
+                            tokens_to_idx[word.lower()],
+                            suf_words_idx_dict[word[-3:].lower()],
+                        )
+                        window_tuples.append(
+                            (pref_in_tuple, word_in_tuple, suf_in_tuple)
+                        )
+                        continue
+                    if word[:3].lower() in pref_words_idx_dict:
+                        pref_in_tuple = pref_words_idx_dict[word[:3].lower()]
+                    if word[-3:].lower() in suf_words_idx_dict:
+                        suf_in_tuple = suf_words_idx_dict[word[-3:].lower()]
+                else:
+                    if word in tokens_to_idx.keys():
+                        pref_in_tuple, word_in_tuple, suf_in_tuple = (
+                            pref_words_idx_dict[word[:3]],
+                            tokens_to_idx[word],
+                            suf_words_idx_dict[word[-3:]],
+                        )
+                        window_tuples.append(
+                            (pref_in_tuple, word_in_tuple, suf_in_tuple)
+                        )
+                        continue
+                    if word[:3] in pref_words_idx_dict:
+                        pref_in_tuple = pref_words_idx_dict[word[:3]]
+                    if word[-3:] in suf_words_idx_dict:
+                        suf_in_tuple = suf_words_idx_dict[word[-3:]]
+
+                window_tuples.append((pref_in_tuple, word_in_tuple, suf_in_tuple))
+            window.extend(window_tuples)
+            if i > len(tokens) - window_size - 1:
+                for j in range(i - (len(tokens) - window_size - 1)):
+                    window.append(
+                        (
+                            pref_words_idx_dict["PAD"],
+                            tokens_to_idx["PAD"],
+                            suf_words_idx_dict["PAD"],
+                        )
+                    )
+
+            windows.append(window)
+
+    return (
+        torch.tensor(labels_idx),
+        torch.tensor(windows),
+        vocab,
+        labels_vocab,
+        labels_to_idx,
+        all_tokens,
+        embedding_vecs,
+        pref_vocab,
+        suf_vocab,
+    )
+
+
+def main_pretrained(task="ner"):
+    words_embedding_vocabulary, embedding_vecs = load_embedding_matrix()
     (
-        tokens_idx,
         labels_idx,
         windows,
         vocab,
         labels_vocab,
-        windows_dict,
-        prefix_windows,
-        suffix_windows,
-        prefixes_vocab,
-        suffixes_vocab,
-    ) = read_data(f"./{task}/train", task=task, vocab=_)
-    # Create embedding matrices for the prefixes and suffixes
-
-    embedding_matrix_prefixes = nn.Embedding(len(prefixes_vocab), 50)
-    nn.init.xavier_uniform_(embedding_matrix_prefixes.weight)
-    embedding_matrix_suffixes = nn.Embedding(len(suffixes_vocab), 50)
-    nn.init.xavier_uniform_(embedding_matrix_suffixes.weight)
-
-    # create an empty embedding matrix, each vector is size 50
-    # embedding_matrix = nn.Embedding(len(vocab), 50, _freeze=False)
-    # initialize the embedding matrix to random values using xavier initialization which is a good initialization for NLP tasks
-    # nn.init.xavier_uniform_(embedding_matrix.weight)
-
-    embedding_matrix = nn.Embedding.from_pretrained(
-        vecs,
-        freeze=False,
+        labels_to_idx,
+        _,
+        embedding_vecs,
+        pref_vocab,
+        suf_vocab,
+    ) = read_data(
+        embedding_vecs=embedding_vecs,
+        fname=f"./{task}/train",
+        task=task,
+        type="train",
+        pretrained_vocab=words_embedding_vocabulary,
     )
-    # embedding_matrix.weight.requires_grad = True
+
+    (
+        labels_idx_dev,
+        windows_dev,
+        _,
+        _,
+        _,
+        _,
+        embedding_vecs,
+        pref_vocab,
+        suf_vocab,
+    ) = read_data(
+        pretrained_vocab=words_embedding_vocabulary,
+        embedding_vecs=embedding_vecs,
+        vocab=vocab,
+        labels_vocab=labels_vocab,
+        fname=f"./{task}/dev",
+        task=task,
+        type="dev",
+        pref_vocab=pref_vocab,
+        suf_vocab=suf_vocab,
+    )
+
+    # initialize model and embedding matrix and dataset
+    embedding_matrix = nn.Embedding.from_pretrained(embedding_vecs, freeze=False)
+    pref_embedding_matrix = nn.Embedding(len(pref_vocab), 50)
+    nn.init.xavier_uniform_(pref_embedding_matrix.weight)
+    suf_embedding_matrix = nn.Embedding(len(suf_vocab), 50)
+    nn.init.xavier_uniform_(suf_embedding_matrix.weight)
 
     model = Tagger(
-        task,
         vocab,
         labels_vocab,
         embedding_matrix,
-        embedding_matrix_prefixes,
-        embedding_matrix_suffixes,
+        pref_embedding_matrix=pref_embedding_matrix,
+        suf_embedding_matrix=suf_embedding_matrix,
     )
 
-    # Make a new tensor out of the windows, so the tokens are windows of size window_size in the dataset
-    tokens_idx_new = torch.tensor([window for window, label in windows])
+    # the windows were generated according to the new pretrained vocab (plus missing from train) if we use pretrained.
+    dataset = TensorDataset(windows, labels_idx)
+    dev_dataset = TensorDataset(windows_dev, labels_idx_dev)
 
-    dataset = TensorDataset(
-        tokens_idx_new,
-        torch.tensor(prefix_windows),
-        torch.tensor(suffix_windows),
-        labels_idx,
+    lr_dict = {"ner": 0.0009, "pos": 0.0003}
+    epoch_dict = {"ner": 10, "pos": 12}
+
+    # train model
+    dev_loss, dev_accuracy, dev_accuracy_no_o = train_model(
+        model,
+        input_data=dataset,
+        dev_data=dev_dataset,
+        epochs=epoch_dict[task],
+        lr=lr_dict[task],
+        labels_to_idx=labels_to_idx,
+        task=task,
     )
 
-    # Load the dev data
+    # plot the results
+    plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task,tagger_name=(os.path.basename(__file__).split(".")[0])+"_pretrained")
+
+    print("Test")
     (
-        tokens_idx_dev,
-        labels_idx_dev,
-        windows_dev,
+        _,
+        windows_test,
+        _,
+        _,
+        _,
+        original_tokens,
+        embedding_vecs,
+        pref_vocab,
+        suf_vocab,
+    ) = read_data(
+        embedding_vecs=embedding_vecs,
+        fname=f"./{task}/test",
+        vocab=vocab,
+        labels_vocab=labels_vocab,
+        type="test",
+        task=task,
+        pref_vocab=pref_vocab,
+        suf_vocab=suf_vocab,
+    )
+
+    test_dataset = TensorDataset(windows_test, torch.tensor([0] * len(windows_test)))
+
+    run_inference(
+        model=model, input_data=test_dataset, task=task, original_tokens=original_tokens
+    )
+
+
+def main_not_pretrained(task="ner"):
+    (
+        labels_idx,
+        windows,
         vocab,
         labels_vocab,
-        windows_dict,
-        prefix_windows,
-        suffix_windows,
-        prefixes_vocab,
-        suffixes_vocab,
-    ) = read_data(f"./{task}/dev", task=task, vocab=vocab, labels_vocab=labels_vocab)
+        labels_to_idx,
+        _,
+        _,
+        pref_vocab,
+        suf_vocab,
+    ) = read_data(fname=f"./{task}/train", task=task, type="train")
 
-    tokens_idx_dev_new = torch.tensor([window for window, label in windows_dev])
-    dev_dataset = TensorDataset(
-        tokens_idx_dev_new,
-        torch.tensor(prefix_windows),
-        torch.tensor(suffix_windows),
-        labels_idx_dev,
+    labels_idx_dev, windows_dev, _, _, _, _, _, _, _ = read_data(
+        vocab=vocab,
+        labels_vocab=labels_vocab,
+        fname=f"./{task}/dev",
+        task=task,
+        type="dev",
+        pref_vocab=pref_vocab,
+        suf_vocab=suf_vocab,
     )
-    # Get the dev loss from the model training
-    results = train_model(
-        model, input_data=dataset, dev_data=dev_dataset, epochs=10, windows=windows
+
+    # initialize model and embedding matrix and dataset
+    embedding_matrix = nn.Embedding(len(vocab), 50)
+    nn.init.xavier_uniform_(embedding_matrix.weight)
+    pref_embedding_matrix = nn.Embedding(len(pref_vocab), 50)
+    nn.init.xavier_uniform_(pref_embedding_matrix.weight)
+    suf_embedding_matrix = nn.Embedding(len(suf_vocab), 50)
+    nn.init.xavier_uniform_(suf_embedding_matrix.weight)
+
+    model = Tagger(
+        vocab,
+        labels_vocab,
+        embedding_matrix,
+        pref_embedding_matrix=pref_embedding_matrix,
+        suf_embedding_matrix=suf_embedding_matrix,
     )
-    # Plot the dev loss, and save
-    p = plt.plot(results, label="dev loss")
-    plt.title(f"{task} task")
-    plt.savefig(f"loss_{task}.png")
-    # TODO: add test data from tagger1
+
+    dataset = TensorDataset(windows, labels_idx)
+    dev_dataset = TensorDataset(windows_dev, labels_idx_dev)
+
+    lr_dict = {"ner": 0.0002, "pos": 0.0001}
+    epoch_dict = {"ner": 10, "pos": 10}
+
+    # train model
+    dev_loss, dev_accuracy, dev_accuracy_no_o = train_model(
+        model,
+        input_data=dataset,
+        dev_data=dev_dataset,
+        epochs=epoch_dict[task],
+        lr=lr_dict[task],
+        labels_to_idx=labels_to_idx,
+        task=task,
+    )
+
+    # plot the results
+    plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task,tagger_name=(os.path.basename(__file__).split(".")[0])+"_not_pretrained")
+
+    print("Test")
+    (
+        _,
+        windows_test,
+        _,
+        _,
+        _,
+        original_tokens,
+        embedding_vecs,
+        pref_vocab,
+        sub_vocab,
+    ) = read_data(
+        fname=f"./{task}/test",
+        vocab=vocab,
+        labels_vocab=labels_vocab,
+        type="test",
+        task=task,
+        suf_vocab=suf_vocab,
+        pref_vocab=pref_vocab,
+    )
+
+    test_dataset = TensorDataset(windows_test, torch.tensor([0] * len(windows_test)))
+
+    run_inference(
+        model=model, input_data=test_dataset, task=task, original_tokens=original_tokens
+    )
 
 
 if __name__ == "__main__":
     tasks = ["ner", "pos"]
+    load_pretrained = True
     for task in tasks:
-        main(task)
+        print(task)
+        print("pretrain")
+        main_pretrained(task)
+        print("not pretrain")
+        main_not_pretrained(task)
