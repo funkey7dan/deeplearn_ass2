@@ -18,10 +18,9 @@ class Tagger(nn.Module):
     def __init__(
         self,
         task,
-        vocab,
         labels_vocab,
         embedding_matrix,
-        char_embedding,
+        chars_embedding,
         char_to_idx,
         window_size=5,
         max_word_len=20,
@@ -51,7 +50,7 @@ class Tagger(nn.Module):
         # input_size = (
         #     embedding_matrix.embedding_dim * window_size
         # )  # 5 concat. 50 dimensional embedding vectors, output over labels
-        input_size = char_embedding.embedding_dim + embedding_matrix.embedding_dim
+        input_size = chars_embedding.embedding_dim + embedding_matrix.embedding_dim
         self.in_linear = nn.Linear(input_size, hidden_size)
         self.out_linear = nn.Linear(hidden_size, output_size)
         # self.softmax = nn.Softmax()
@@ -323,7 +322,7 @@ def read_data(
     global idx_to_label
     global idx_to_word
     data = []
-SEPARATOR = "\t" if task == "ner" else " "
+    SEPARATOR = "\t" if task == "ner" else " "
 
     with open(fname) as f:
         lines = f.readlines()
@@ -398,7 +397,6 @@ SEPARATOR = "\t" if task == "ner" else " "
     windows_dict = {}
     tokens_idx_all = []
     labels_idx_all = []
-    char_idx_all = {}
     max_len = 0
 
     for sentence in sentences:
@@ -517,7 +515,7 @@ def main(task="ner"):
         vocab,
         labels_vocab,
         embedding_matrix,
-        char_embedding=chars_embedding,
+        chars_embedding = chars_embedding,
         window_size=1,
         max_word_len=max_len,
         char_to_idx=char_to_idx,
