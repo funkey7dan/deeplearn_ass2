@@ -3,23 +3,27 @@ from tagger1 import main as tagger1
 from tagger2 import main as tagger2
 from tagger3 import main_pretrained as tagger3_pretrained
 from tagger3 import main_not_pretrained as tagger3_not_pretrained
+from tagger4 import main as tagger4
+from top_k import main as top_k
 
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="Tagger Launcher",
+        prog="tagger_launcher.py",
         description="A driver code for tagger1, tagger2, tagger3",
     )
+
     parser.add_argument(
         "--part",
         "-p",
         type=int,
         default="1",
         nargs=1,
-        choices=range(1, 5),
+        choices=range(1, 6),
         help="Which part of the exercise to run, i.e 1 for tagger1",
         required=True,
     )
+
     parser.add_argument(
         "--task",
         "-t",
@@ -27,7 +31,7 @@ def build_parser():
         nargs=1,
         default="ner",
         choices=["ner", "pos"],
-        help="Which part of the exercise to run, i.e 1 for tagger1",
+        help="Which task to run, i.e ner or pos",
         required=True,
     )
     parser.add_argument(
@@ -63,12 +67,15 @@ def main():
             tagger1("pos")
 
     elif part == 2:
+        top_k()
+
+    elif part == 3:
         if task == "ner":
             tagger2("ner")
         else:
             tagger2("pos")
 
-    elif part == 3:
+    elif part == 4:
         if task == "ner":
             if pretrained:
                 tagger3_pretrained("ner")
@@ -79,6 +86,12 @@ def main():
                 tagger3_pretrained("pos")
             else:
                 tagger3_not_pretrained("pos")
+
+    elif part == 5:
+        if task == "ner":
+            tagger2("ner")
+        else:
+            tagger2("pos")
 
 
 if __name__ == "__main__":
