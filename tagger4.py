@@ -275,8 +275,8 @@ def test_model(model, input_data, windows):
 
     return (
         running_val_loss / k,
-        count / (k * BATCH_SIZE),
-        count_no_o / ((k * BATCH_SIZE) - to_remove),
+        count / len(input_data),
+        count_no_o / (len(input_data) - to_remove),
     )
 
 
