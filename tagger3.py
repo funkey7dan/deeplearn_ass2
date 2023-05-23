@@ -214,8 +214,8 @@ def test_model(model, input_data, task, labels_to_idx):
 
     return (
         running_val_loss / k,
-        count / (k * BATCH_SIZE),
-        count_no_o / ((k * BATCH_SIZE) - to_remove),
+        count / len(input_data),
+        count_no_o / (len(input_data) - to_remove),
     )
 
 
@@ -248,8 +248,8 @@ def run_inference(model, input_data, task, original_tokens):
             predictions.extend(zip(x_words, y_hat_labels))
             j += BATCH_SIZE
 
-    # find which tagger we are using
-    tagger_idx = re.findall(r"\d+", os.path.basename(__file__))[0]
+    # find which tagger we are using - question 4 is test4
+    tagger_idx = 4
     with open(f"test{tagger_idx}.{task}", "w") as f:
         for pred in predictions:
             f.write(f"{pred[0]} {pred[1]}" + "\n")
