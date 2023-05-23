@@ -551,7 +551,13 @@ def main_pretrained(task="ner"):
     )
 
     # plot the results
-    plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task,tagger_name=(os.path.basename(__file__).split(".")[0])+"_pretrained")
+    plot_results(
+        dev_loss,
+        dev_accuracy,
+        dev_accuracy_no_o,
+        task,
+        tagger_name=(os.path.basename(__file__).split(".")[0]) + "_pretrained",
+    )
 
     print("Test")
     (
@@ -624,8 +630,8 @@ def main_not_pretrained(task="ner"):
     dataset = TensorDataset(windows, labels_idx)
     dev_dataset = TensorDataset(windows_dev, labels_idx_dev)
 
-    lr_dict = {"ner": 0.0002, "pos": 0.0001}
-    epoch_dict = {"ner": 10, "pos": 10}
+    lr_dict = {"ner": 0.0007, "pos": 0.0001}
+    epoch_dict = {"ner": 5, "pos": 10}
 
     # train model
     dev_loss, dev_accuracy, dev_accuracy_no_o = train_model(
@@ -639,7 +645,13 @@ def main_not_pretrained(task="ner"):
     )
 
     # plot the results
-    plot_results(dev_loss, dev_accuracy, dev_accuracy_no_o, task,tagger_name=(os.path.basename(__file__).split(".")[0])+"_not_pretrained")
+    plot_results(
+        dev_loss,
+        dev_accuracy,
+        dev_accuracy_no_o,
+        task,
+        tagger_name=(os.path.basename(__file__).split(".")[0]) + "_not_pretrained",
+    )
 
     print("Test")
     (

@@ -51,7 +51,7 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.pretrained and not args.task != 3:
+    if args.pretrained and not args.task != 4:
         print("Pretrained argument is only for tagger3")
         exit(1)
 
