@@ -32,8 +32,9 @@ def build_parser():
         default="ner",
         choices=["ner", "pos"],
         help="Which task to run, i.e ner or pos",
-        required=True,
+        required=False,
     )
+
     parser.add_argument(
         "--pretrained",
         "--pre",
@@ -58,7 +59,7 @@ def main():
     task = args.task[0]
 
     print(
-        f"Running part {part} for task \"{task}\"{', using pretrained embeddings' if args.pretrained else ''}"
+        f"Running part {part} {'for task '+task if part!=2 else ''}{', using pretrained embeddings' if args.pretrained else ''}"
     )
     if part == 1:
         if task == "ner":
