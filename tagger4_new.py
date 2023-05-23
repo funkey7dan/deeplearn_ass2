@@ -34,61 +34,11 @@ class WordCNN(nn.Module):
         self.conv1d = nn.Conv2d(
             conv_input_dim, num_filters, window_size, self.max_word_len
         )
+        self.activation = nn.ReLU()
         # TODO: check that the output size is correct
         # self.max_pool = nn.MaxPool1d(kernel_size=max_word_len - window_size + 1)
         # self.max_pool = nn.MaxPool2d(kernel_size=(1, max_word_len - window_size + 1))
         self.char_to_idx = char_to_idx
-
-    # def forward(self, sequence):
-    #     # Sequence is a tensor of shape (batch_size, window_size)
-    #     global word_chars_cache
-    #     batch_size = sequence.shape[0]
-    #     # We get a batch of words, each word is a sequence of chars,
-    #     # we need to get the char embeddings for each char in each word
-
-    #     # Build a matrix of char embeddings for each word in the batch:
-    #     # TODO: make it more efficient with batching
-    #     word_matrices = []
-    #     padding_tensor = self.char_embedding(torch.tensor(self.char_to_idx["pad"]))
-
-    #     for i in range(batch_size):
-    #         # for each word in the window of 5, get the char embeddings
-    #         window_torch = []
-    #         for j in range(len(sequence[i])):
-    #             word = sequence[i][j].item()
-    #             word = idx_to_word[word]
-    #             word = word.lower()
-    #             padding_front = math.floor((self.max_word_len - len(word)) / 2)
-    #             padding_back = self.max_word_len - len(word) - padding_front
-    #             # Repeat the padding tensor {padding} times
-    #             # padding_front_tensor = padding_tensor.repeat(padding_front, 1)
-    #             # padding_back_tensor = padding_tensor.repeat(padding_back, 1)
-
-    #             if not word in word_chars_cache:
-    #                 word_chars_cache[word] = [self.char_to_idx[char] for char in word]
-    #             word = word_chars_cache[word]
-    #             word = [self.char_embedding(torch.tensor(char)) for char in word]
-    #             word = torch.stack(word)
-
-    #             word_matrix = nn.functional.pad(word, (0, 0, padding_front, padding_back))
-    #             # word_matrix = torch.cat(
-    #             #     (padding_front_tensor, word, padding_back_tensor), dim=0
-    #             # )
-    #             window_torch.append(word_matrix)
-    #         word_matrices.append(torch.stack(window_torch))
-    #     # x = torch.flatten(input=torch.stack(word_matrices), start_dim=1)
-    #     x = torch.stack(word_matrices)
-
-    #     # conv1d expects the input to be of shape (batch_size, channels, seq_len)
-    #     # so we get a tensor of shape (batch_size, seq_len, channels) and then permute it
-    #     #x = x.permute(0, 2, 1)
-    #     #TODO: match the dimenions of x to the dimensions of the conv1d, x is of shape torch.Size([1024, 5, 61, 30]s)
-    #     x = x.permute(0, 3, 2, 1)
-    #     x = self.conv1d(x)
-    #     #x = x.squeeze()
-    #     x = torch.max(x, dim=2)[0]
-    #     #x = self.max_pool(x)
-    #     return x.squeeze()
 
     def forward(self, sequence):
         global word_chars_cache
@@ -112,14 +62,6 @@ class WordCNN(nn.Module):
                 word_chars_cache[word] = [self.char_to_idx[char] for char in word]
             char_idx.append(word_chars_cache[word])
         [[self.char_to_idx[char] for char in word] for word in words]
-        # Pad or truncate the character indices to match max_word_len
-        # TODO: change so the padding is done in the beginning and the end of the word
-        # char_indices = [
-        #     indices[:max_word_len]
-        #     if len(indices) > max_word_len
-        #     else indices + [0] * (max_word_len - len(indices))
-        #     for indices in char_indices
-        # ]
 
         char_indices = [
             [self.char_to_idx["pad"]] * (math.floor((max_word_len - len(word)) / 2))
@@ -143,6 +85,7 @@ class WordCNN(nn.Module):
         x = x.permute(0, 3, 2, 1)
         # Apply Conv1d and max-pooling
         x = self.conv1d(x)
+        x = self.activation(x)
         x = torch.max(x, dim=2)[0]
         return x.squeeze()
         # x = self.max_pool(x).squeeze(dim=2)
@@ -183,7 +126,7 @@ class Tagger(nn.Module):
         input_size = (
             char_embedding.embedding_dim + embedding_matrix.embedding_dim * window_size
         )
-        hidden_size = 500
+        hidden_size = 150
         output_size = len(labels_vocab)
 
         self.in_linear = nn.Linear(input_size, hidden_size)
@@ -237,17 +180,15 @@ def train_model(
 ):
     global idx_to_label
     BATCH_SIZE = 1024
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=lr,
+    )
+    sched = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=2, gamma=0.1, verbose=True
+    )  # scheduler that every 3 epochs it updates the lr
+
     model.train()
-
-    # sched = torch.optim.lr_scheduler.StepLR(
-    #     optimizer, step_size=3, gamma=0.1
-    # )  # scheduler that every 3 epochs it updates the lr
-
-    # dev_loss, dev_acc, dev_acc_clean = test_model(model, dev_data, task=task)
-    # print(
-    #     f"Before Training, Dev Loss: {dev_loss}, Dev Acc: {dev_acc} Acc No O:{dev_acc_clean}"
-    # )
 
     best_loss = 100000
     best_weights = None
@@ -259,6 +200,7 @@ def train_model(
         train_loader = DataLoader(
             input_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=4
         )
+
         train_loss = 0
         for i, data in enumerate(train_loader, 0):
             x, y = data
@@ -289,7 +231,10 @@ def train_model(
                 f"Epoch {j + 1}/{epochs}, Loss: {train_loss / i}, Dev Loss: {dev_loss}, Dev Acc: {dev_acc}"
             )
 
-        # sched.step()
+        sched.step()
+        for name, param in model.named_parameters():
+            print(f"Layer: {name} - Mean Weight: {param.data.mean()}")
+            
         dev_loss_results.append(dev_loss)
         dev_acc_results.append(dev_acc)
         dev_acc_no_o_results.append(dev_acc_clean)
@@ -614,6 +559,7 @@ def main(task="ner"):
     chars_embedding = nn.Embedding(len(char_vocab), 30, padding_idx=char_to_idx["pad"])
     nn.init.uniform_(chars_embedding.weight, -math.sqrt(3 / 30), math.sqrt(3 / 30))
 
+    
     model = Tagger(
         vocab,
         labels_vocab,
@@ -627,8 +573,8 @@ def main(task="ner"):
     dataset = TensorDataset(windows, labels_idx)
     dev_dataset = TensorDataset(windows_dev, labels_idx_dev)
 
-    lr_dict = {"ner": 0.0009, "pos": 0.0003}
-    epoch_dict = {"ner": 1, "pos": 12}
+    lr_dict = {"ner": 0.01, "pos": 0.0003}
+    epoch_dict = {"ner": 8, "pos": 12}
 
     # train model
     dev_loss, dev_accuracy, dev_accuracy_no_o = train_model(
@@ -680,7 +626,7 @@ def main(task="ner"):
 
 
 if __name__ == "__main__":
-    tasks = ["ner", "pos"]
+    tasks = ["ner"]
     for task in tasks:
         print(task)
         main(task)

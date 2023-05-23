@@ -10,7 +10,7 @@ from top_k import main as top_k
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="tagger_launcher.py",
-        description="A driver code for tagger1, tagger2, tagger3",
+        description="A driver code for tagger1, tagger2, tagger3,tagger4 and top_k",
     )
 
     parser.add_argument(

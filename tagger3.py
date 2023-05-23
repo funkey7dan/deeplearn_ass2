@@ -351,7 +351,7 @@ def read_data(
     if not vocab:
         vocab = set(all_tokens)
         vocab.add("PAD")  # add a padding token
-        vocab.add("UUUNKKK")  # add an unknown token
+        vocab.add("UNK")  # add an unknown token
 
         if embedding_vecs is not None:
             all_pref_words.extend([word[:3] for word in pretrained_vocab])
@@ -374,9 +374,9 @@ def read_data(
         pref_vocab = set(all_pref_words)
         suf_vocab = set(all_suf_words)
         pref_vocab.add("PAD")  # add a padding token
-        pref_vocab.add("UUUNKKK")  # add an unknown token
+        pref_vocab.add("UNK")  # add an unknown token
         suf_vocab.add("PAD")  # add a padding token
-        suf_vocab.add("UUUNKKK")  # add an unknown token
+        suf_vocab.add("UNK")  # add an unknown token
 
     # if in train case
     if not labels_vocab:
@@ -412,9 +412,9 @@ def read_data(
             window_tuples = []
             for word in extra_words:
                 pref_in_tuple, word_in_tuple, suf_in_tuple = (
-                    pref_words_idx_dict["UUUNKKK"],
-                    tokens_to_idx["UUUNKKK"],
-                    suf_words_idx_dict["UUUNKKK"],
+                    pref_words_idx_dict["UNK"],
+                    tokens_to_idx["UNK"],
+                    suf_words_idx_dict["UNK"],
                 )
 
                 if embedding_vecs is not None:

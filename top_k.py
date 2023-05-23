@@ -32,7 +32,7 @@ def most_similar(word, vocab, vecs, k=5):
     return top_k_idx, distances
 
 
-if __name__ == "__main__":
+def main():
     to_check = ["dog", "england", "john", "explode", "office"]
     # vocab = np.loadtxt("vocab.txt", dtype=str)
     # vocab.tolist()
@@ -48,3 +48,7 @@ if __name__ == "__main__":
     for word in to_check:
         for i, w in enumerate(sim_dict_strings[word][0]):
             print(f"{word} -> {w}, distance: {sim_dict_strings[word][1][i].round(4)}")
+
+
+if __name__ == "__main__":
+    main()
