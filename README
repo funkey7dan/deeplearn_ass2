@@ -12,6 +12,28 @@ Coral Kuta, 208649186
 -	argparse
 
 
+## File structure:
+├── images
+├── ner
+│   ├── dev
+│   ├── test
+│   └── train
+├── pos
+│   ├── dev
+│   ├── test
+│   └── train
+├── tagger1.py
+├── tagger2.py
+├── tagger3.py
+├── tagger4.py
+├── tagger_launcher.py
+├── top_k.py
+├── tree.txt
+├── vocab.txt
+└── wordVectors.txt
+
+Note: this directory structure is required for the plot functions to work
+
 ## Relevant files:
 ### Files for all questions:
 -	`tagger_launcher.py`
