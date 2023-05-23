@@ -9,4 +9,12 @@ submit/part1.pdf
 submit/part2.pdf
 submit/part3.pdf
 tree.txt
-.submit/
+.submit/*
+submit/test1.ner
+submit/test1.pos
+submit/test2.ner
+submit/test2.pos
+submit/test3.ner
+submit/test3.pos
+submit/test4.ner
+submit/test4.pos
