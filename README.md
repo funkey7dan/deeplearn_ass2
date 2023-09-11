@@ -13,6 +13,7 @@ Coral Kuta, 208649186
 
 
 ## File structure:
+```
 ├── images
 ├── ner
 │   ├── dev
@@ -31,7 +32,7 @@ Coral Kuta, 208649186
 ├── tree.txt
 ├── vocab.txt
 └── wordVectors.txt
-
+```
 Note: this directory structure is required for the plot functions to work
 
 ## Relevant files:
